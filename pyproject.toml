@@ -1,0 +1,61 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "llm_docs"
+version = "0.1.0"
+description = "Condensed, optimized documentation for efficient consumption by LLMs"
+readme = "README.md"
+requires-python = ">=3.12"
+license = {file = "LICENSE"}
+authors = [
+    {name = "Jeffrey Emanuel", email = "jeffrey.emanuel@gmail.com"},
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fastapi",
+    "uvicorn",
+    "sqlmodel",
+    "httpx",
+    "browser-use",
+    "termcolor",
+    "markitdown",
+    "anthropic",  # For Claude API integration
+    "openai", # For OpenAI API integration
+    "pydantic",
+    "rich",       # For pretty terminal output
+    "tqdm",       # For progress bars
+    "ruff",
+    "mypy",
+    "pytest",
+    "beautifulsoup4",  # HTML parsing
+    "lxml",
+    "typer",       # CLI interface
+]
+
+[tool.ruff]
+target-version = "py312"
+select = ["E", "F", "B", "I"]
+ignore = ["E501"]
+
+[tool.black]
+line-length = 150
+target-version = ["py312"]
+
+[tool.mypy]
+python_version = "3.12"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/llm_docs"]
+
+[project.scripts]
+llm_docs = "llm_docs.cli:app"
