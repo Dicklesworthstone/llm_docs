@@ -22,20 +22,27 @@ dependencies = [
     "uvicorn",
     "sqlmodel",
     "httpx",
+    "aiolimiter",
+    "aiofiles",
+    "psutil",
+    "async-timeout",
     "browser-use",
     "termcolor",
     "markitdown",
-    "anthropic",  # For Claude API integration
-    "openai", # For OpenAI API integration
+    "anthropic",
+    "openai",
+    "google-genai"
+    "tiktoken",
+    "python-decouple",
     "pydantic",
-    "rich",       # For pretty terminal output
-    "tqdm",       # For progress bars
+    "rich",
+    "tqdm",
     "ruff",
     "mypy",
     "pytest",
-    "beautifulsoup4",  # HTML parsing
+    "beautifulsoup4",
     "lxml",
-    "typer",       # CLI interface
+    "typer",
 ]
 
 [tool.ruff]
