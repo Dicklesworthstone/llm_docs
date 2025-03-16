@@ -2,7 +2,6 @@
 Improved prompt templates for documentation distillation.
 """
 
-from typing import Dict, Any
 from string import Template
 
 # Base templates for different parts of the distillation process
