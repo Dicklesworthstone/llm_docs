@@ -7,7 +7,7 @@ import asyncio
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
-from sqlmodel import Session, SQLModel
+from sqlmodel import SQLModel
 
 
 @pytest.fixture(scope="session", name="async_engine")
@@ -37,19 +37,18 @@ async def async_session_fixture(async_engine):
 
 
 @pytest.fixture(name="client")
-def client_fixture(engine):
+def client_fixture(async_engine):
     """Create a FastAPI test client."""
-    # We need to modify the database dependency
     # Import here to avoid circular imports
     from llm_docs.api.app import app
-    from llm_docs.storage.database import get_session
+    from llm_docs.storage.database import get_async_session
     
     def get_test_session():
-        with Session(engine) as session:
+        with AsyncSession(async_engine) as session:
             yield session
     
     # Override the dependency
-    app.dependency_overrides[get_session] = get_test_session
+    app.dependency_overrides[get_async_session] = get_test_session
     
     # Create the client
     with TestClient(app) as client:

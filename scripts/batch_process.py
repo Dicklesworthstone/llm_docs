@@ -23,7 +23,7 @@ from llm_docs.distillation import DocumentationDistiller
 from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
 from llm_docs.storage.database import init_db, transaction
-from llm_docs.storage.models import DistillationJob, Package, PackageStatus
+from llm_docs.storage.models import DistillationJob, DistillationJobStatus, Package, PackageStatus
 
 db_path = config.database.url.replace("sqlite:///", "")
 
@@ -72,7 +72,7 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
             if not extract_only:
                 job = DistillationJob(
                     package_id=db_package.id,
-                    status="in_progress",
+                    status=DistillationJobStatus.IN_PROGRESS,
                     started_at=datetime.now(),
                     input_file_path=doc_path
                 )
@@ -102,7 +102,7 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
                         select(DistillationJob).where(DistillationJob.id == job.id)
                     )
                     db_job = result.scalar_one()
-                    db_job.status = "failed"
+                    db_job.status = DistillationJobStatus.FAILED
                     db_job.error_message = "Distillation failed"
                     db_job.completed_at = datetime.now()
                     db_job.chunks_processed = 0  # Set to 0 to indicate processing failed
@@ -123,7 +123,7 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
                     select(DistillationJob).where(DistillationJob.id == job.id)
                 )
                 db_job = result.scalar_one()
-                db_job.status = "completed"
+                db_job.status = DistillationJobStatus.COMPLETED
                 db_job.completed_at = datetime.now()
                 db_job.output_file_path = distilled_path
                 db_job.chunks_processed = db_job.num_chunks

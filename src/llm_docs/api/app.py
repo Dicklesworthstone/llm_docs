@@ -10,7 +10,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Path, Quer
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from rich.console import Console
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -32,7 +32,7 @@ console = Console()
 # FastAPI models for requests and responses
 class PackageCreate(BaseModel):
     name: str
-    priority: Optional[int] = None
+    priority: Optional[int] = Field(None, ge=0)  # Must be non-negative
     description: Optional[str] = None
 
 
@@ -180,7 +180,7 @@ async def process_package(package_id: int):
                     )
                     job = job_result.scalar_first()
                     
-                    if job and job.status not in ["completed", "failed"]:
+                    if job and job.status not in [DistillationJobStatus.COMPLETED, DistillationJobStatus.FAILED]:
                         job.status = DistillationJobStatus.FAILED
                         job.error_message = str(e)
                         job.completed_at = datetime.now()
@@ -472,8 +472,12 @@ async def list_jobs(
     query = select(DistillationJob)
     
     if status:
-        query = query.where(DistillationJob.status == status)
-        
+        try:
+            enum_status = DistillationJobStatus(status)
+            query = query.where(DistillationJob.status == enum_status)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}") from None
+            
     query = query.order_by(DistillationJob.created_at.desc()).offset(offset).limit(limit)
     result = await session.execute(query)
     jobs = result.scalars().all()

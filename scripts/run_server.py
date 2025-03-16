@@ -21,6 +21,15 @@ from llm_docs.storage.database import init_db
 # Initialize console
 console = Console()
 
+def init_db_sync():
+    """Run the async init_db function in a new event loop."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(init_db())
+    finally:
+        loop.close()
+
 def main():
     """Run the server."""
     parser = argparse.ArgumentParser(description="Run the llm_docs API server")
@@ -63,7 +72,7 @@ def main():
     # Initialize database if needed
     if args.init_db or not os.path.exists("llm_docs.db"):
         console.print("[yellow]Initializing database...[/yellow]")
-        asyncio.run(init_db())  # Run async function in sync context
+        init_db_sync()  # Run async function in sync context
     
     # Start the server
     console.print(f"[green]Starting API server at http://{args.host}:{args.port}[/green]")

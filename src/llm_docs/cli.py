@@ -19,7 +19,7 @@ from llm_docs.distillation import DocumentationDistiller
 from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
 from llm_docs.storage.database import init_db, reset_db, transaction
-from llm_docs.storage.models import DistillationJob, Package, PackageStatus
+from llm_docs.storage.models import DistillationJob, DistillationJobStatus, Package, PackageStatus
 
 db_path = config.database.url.replace("sqlite:///", "")
 
@@ -245,7 +245,7 @@ def process(
                 
                 job = DistillationJob(
                     package_id=package.id,
-                    status="in_progress",
+                    status=DistillationJobStatus.IN_PROGRESS,
                     started_at=datetime.now(),
                     input_file_path=doc_path
                 )
@@ -266,7 +266,7 @@ def process(
                     progress.update(task, description="[red]Distillation failed.[/red]")
                     
                     # Update job
-                    job.status = "failed"
+                    job.status = DistillationJobStatus.FAILED
                     job.error_message = "Distillation failed"
                     job.completed_at = datetime.now()
                     session.add(job)
@@ -284,7 +284,7 @@ def process(
                 session.add(package)
                 
                 # Update job
-                job.status = "completed"
+                job.status = DistillationJobStatus.COMPLETED
                 job.completed_at = datetime.now()
                 job.output_file_path = distilled_path
                 job.chunks_processed = job.num_chunks
@@ -331,7 +331,8 @@ def list_packages(
             
             if status:
                 try:
-                    query = query.where(Package.status == status)
+                    enum_status = PackageStatus(status)
+                    query = query.where(Package.status == enum_status)
                 except ValueError:
                     console.print(f"[red]Invalid status: {status}[/red]")
                     valid_statuses = [s.value for s in PackageStatus]
@@ -560,7 +561,7 @@ def batch_process(
                     # Create distillation job
                     job = DistillationJob(
                         package_id=package.id,
-                        status="in_progress",
+                        status=DistillationJobStatus.IN_PROGRESS,
                         started_at=datetime.now(),
                         input_file_path=doc_path
                     )
@@ -580,7 +581,7 @@ def batch_process(
                         console.print(f"[red]Distillation failed for {name}[/red]")
                         
                         # Update job and package
-                        job.status = "failed"
+                        job.status = DistillationJobStatus.FAILED
                         job.error_message = "Distillation failed"
                         job.completed_at = datetime.now()
                         session.add(job)
@@ -591,7 +592,7 @@ def batch_process(
                         return False
                     
                     # Update job and package
-                    job.status = "completed"
+                    job.status = DistillationJobStatus.COMPLETED
                     job.completed_at = datetime.now()
                     job.output_file_path = distilled_path
                     job.chunks_processed = job.num_chunks

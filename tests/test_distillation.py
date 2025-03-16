@@ -57,10 +57,10 @@ This is the content of section 5.
 @pytest.mark.asyncio
 async def test_distill_chunk():
     """Test distilling a chunk of documentation."""
-    with patch('anthropic.AsyncAnthropic.messages.create') as mock_create:
-        # Mock the Anthropic API response
+    with patch('aisuite.Client.chat.completions.create') as mock_create:
+        # Mock the aisuite response
         mock_message = MagicMock()
-        mock_message.content = [MagicMock(text="Distilled content")]
+        mock_message.choices = [MagicMock(message=MagicMock(content="Distilled content"))]
         mock_create.return_value = mock_message
         
         # Create temp dir for output

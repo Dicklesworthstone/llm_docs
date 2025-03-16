@@ -102,14 +102,13 @@ async def reset_db() -> None:
 
 @asynccontextmanager
 async def transaction():
-    """
-    Context manager for database transactions.
-    Automatically rolls back if an exception occurs.
-    """
-    async with transaction() as session:
-        try:
-            yield session
-            await session.commit()
-        except Exception:
-            await session.rollback()
-            raise    
+    """Context manager for database transactions."""
+    session = async_session_maker()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()

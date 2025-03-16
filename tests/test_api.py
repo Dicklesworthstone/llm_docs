@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from llm_docs.storage.models import DistillationJob, Package, PackageStatus
+from llm_docs.storage.models import DistillationJob, DistillationJobStatus, Package, PackageStatus
 
 
 @pytest.mark.asyncio
@@ -184,13 +184,13 @@ async def test_list_jobs(client: TestClient, async_session: AsyncSession):
     jobs = [
         DistillationJob(
             package_id=package.id,
-            status="completed",
+            status=DistillationJobStatus.COMPLETED,
             input_file_path="/tmp/doc.md",
             output_file_path="/tmp/distilled.md"
         ),
         DistillationJob(
             package_id=package.id,
-            status="failed",
+            status=DistillationJobStatus.FAILED,
             input_file_path="/tmp/doc2.md",
             error_message="Test error"
         )
@@ -216,3 +216,15 @@ async def test_list_jobs(client: TestClient, async_session: AsyncSession):
     assert len(data) == 1
     assert data[0]["status"] == "completed"
     assert data[0]["package_name"] == "test-package"
+
+@pytest.mark.asyncio
+async def test_create_package_invalid_name(client: TestClient):
+    """Test creating a package with an invalid name."""
+    # Make the request with an invalid package name
+    response = client.post(
+        "/packages",
+        json={"name": "invalid name with spaces", "priority": 50}
+    )
+    
+    # Check that it returns a validation error
+    assert response.status_code == 400    

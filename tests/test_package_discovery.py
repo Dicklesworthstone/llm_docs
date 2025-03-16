@@ -2,9 +2,10 @@
 Tests for the package discovery module.
 """
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
-from unittest.mock import patch, AsyncMock
-from datetime import datetime
+from sqlalchemy.future import select
 
 from llm_docs.package_discovery import PackageDiscovery
 from llm_docs.storage.models import Package, PackageStats
@@ -98,8 +99,10 @@ async def test_discover_and_store_packages(session):
         assert packages[1].name == "pandas"
         
         # Check that the database was updated
-        db_packages = session.query(Package).all()
+        result = await session.execute(select(Package))
+        db_packages = result.scalars().all()
         assert len(db_packages) == 2
-        
-        db_stats = session.query(PackageStats).all()
+
+        result = await session.execute(select(PackageStats))
+        db_stats = result.scalars().all()
         assert len(db_stats) == 2

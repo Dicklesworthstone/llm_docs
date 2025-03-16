@@ -235,15 +235,17 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                 try:
                     response_content = response.choices[0].message.content
                 except (AttributeError, IndexError) as e:
-                    # Handle different response structures
+                    # Handle aisuite response formats
                     console.print(f"[yellow]Error parsing response: {e}. Trying alternate format...[/yellow]")
-                    if hasattr(response, 'content'):
+                    if hasattr(response, 'choices') and hasattr(response.choices[0], 'text'):
+                        response_content = response.choices[0].text
+                    elif hasattr(response, 'content'):
                         response_content = response.content
                     elif hasattr(response, 'text'):
                         response_content = response.text
                     else:
                         raise ValueError(f"Unknown response format: {response}") from None
-                
+    
                 # Rate limit to avoid hitting API limits
                 await asyncio.sleep(1)
                 
