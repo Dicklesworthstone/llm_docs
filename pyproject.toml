@@ -32,7 +32,8 @@ dependencies = [
     "markitdown",
     "anthropic",
     "openai",
-    "google-genai"
+    "google-genai",
+    "aisuite[all]",
     "tiktoken",
     "python-decouple",
     "pydantic",

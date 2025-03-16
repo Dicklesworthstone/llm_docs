@@ -1,31 +1,30 @@
 """
-Module for distilling documentation using Claude 3.7 Sonnet.
+Module for distilling documentation using LLMs via aisuite.
 """
 
 import asyncio
-import os
 import re
 import tempfile
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
-from anthropic import AsyncAnthropic
+import aisuite as ai
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
+from llm_docs.config import config
 from llm_docs.storage.models import Package
 
 # Initialize console
 console = Console()
 
 class DocumentationDistiller:
-    """Distills documentation using Claude 3.7 Sonnet."""
+    """Distills documentation using LLMs via aisuite."""
     
     def __init__(self, 
                  output_dir: str = "distilled_docs", 
-                 api_key: Optional[str] = None, 
-                 model: str = "claude-3-7-sonnet-20250219",
+                 llm_config: Optional[Dict[str, Any]] = None,
                  max_chunk_tokens: int = 80000,
                  retry_delay: int = 5,
                  max_retries: int = 3):
@@ -34,8 +33,7 @@ class DocumentationDistiller:
         
         Args:
             output_dir: Directory to store distilled documentation
-            api_key: Anthropic API key (defaults to ANTHROPIC_API_KEY env var)
-            model: Model to use for distillation
+            llm_config: LLM provider configuration (defaults to config.llm.distillation or config.llm.default)
             max_chunk_tokens: Maximum number of tokens per chunk
             retry_delay: Initial delay between retries in seconds
             max_retries: Maximum number of retries for API calls
@@ -47,13 +45,26 @@ class DocumentationDistiller:
         self.cache_dir = Path("cache/distillation")
         self.cache_dir.mkdir(exist_ok=True, parents=True)
         
-        # Use provided API key or get from environment
-        self.api_key = api_key or os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError("Anthropic API key not provided and ANTHROPIC_API_KEY not set")
-            
-        self.client = AsyncAnthropic(api_key=self.api_key)
-        self.model = model
+        # Use provided config or get from global config
+        if llm_config:
+            self.provider = llm_config.get("provider", "anthropic")
+            self.provider_model = llm_config.get("model", "claude-3-7-sonnet-20250219")
+            self.temperature = llm_config.get("temperature", 0.1)
+            self.max_tokens = llm_config.get("max_tokens", 4000)
+        else:
+            # Use distillation config if available, otherwise use default
+            llm_conf = config.llm.distillation or config.llm.default
+            self.provider = llm_conf.provider
+            self.provider_model = llm_conf.model
+            self.temperature = llm_conf.temperature
+            self.max_tokens = llm_conf.max_tokens
+        
+        # Initialize aisuite client
+        self.client = ai.Client()
+        
+        # Full model name for aisuite (provider:model)
+        self.model = f"{self.provider}:{self.provider_model}"
+        
         self.max_chunk_tokens = max_chunk_tokens
         self.retry_delay = retry_delay
         self.max_retries = max_retries
@@ -145,7 +156,7 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                            package_description: str = "",
                            doc_type: str = "general") -> str:
         """
-        Distill a chunk of documentation using Claude.
+        Distill a chunk of documentation using LLM.
         
         Args:
             package_name: Name of the package
@@ -207,20 +218,21 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                     prev_parts_count=num_parts
                 )
         
-        # Send to Claude with retry logic
+        # Send to LLM with retry logic
         retry_delay = self.retry_delay
         
         for attempt in range(self.max_retries):
             try:
-                message = await self.client.messages.create(
+                # Use aisuite client instead of Anthropic directly
+                response = await self.client.chat.completions.create(
                     model=self.model,
-                    max_tokens=4000,
-                    temperature=0.1,
-                    messages=[{"role": "user", "content": prompt}]
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=self.temperature,
+                    max_tokens=self.max_tokens
                 )
                 
                 # Extract the response content
-                response_content = message.content[0].text
+                response_content = response.choices[0].message.content
                 
                 # Rate limit to avoid hitting API limits
                 await asyncio.sleep(1)

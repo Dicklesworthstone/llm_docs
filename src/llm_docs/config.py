@@ -7,7 +7,17 @@ import os
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from decouple import Config as DecoupleConfig
+from decouple import RepositoryEnv
 from pydantic import BaseModel, Field
+
+# Initialize decouple config
+# First try to load from .env file, fall back to environment variables
+env_file = Path('.env')
+if env_file.exists():
+    config_decouple = DecoupleConfig(RepositoryEnv('.env'))
+else:
+    from decouple import config as config_decouple
 
 
 class DatabaseConfig(BaseModel):
@@ -24,12 +34,28 @@ class APIConfig(BaseModel):
     enable_auth: bool = Field(default=False)
 
 
-class AnthropicConfig(BaseModel):
-    """Anthropic API configuration."""
-    api_key: Optional[str] = Field(default=None)
-    model: str = Field(default="claude-3-7-sonnet-20250219")
+class LLMProviderConfig(BaseModel):
+    """Configuration for a specific LLM provider."""
+    provider: str = Field(default="anthropic")  # anthropic, openai, google, etc.
+    model: str = Field(default="claude-3-7-sonnet-20250219")  # Model name (without provider prefix)
+    api_key: Optional[str] = Field(default=None)  # API key for this provider
     max_tokens: int = Field(default=4000)
     temperature: float = Field(default=0.1)
+
+
+class LLMConfig(BaseModel):
+    """Configuration for LLM usage across different parts of the system."""
+    # Default provider to use if a specific provider isn't specified
+    default: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
+    
+    # Provider for distillation
+    distillation: Optional[LLMProviderConfig] = None
+    
+    # Provider for browser exploration
+    browser_exploration: Optional[LLMProviderConfig] = None
+    
+    # Provider for documentation extraction
+    doc_extraction: Optional[LLMProviderConfig] = None
 
 
 class ProcessingConfig(BaseModel):
@@ -53,7 +79,7 @@ class Config(BaseModel):
     """Main configuration."""
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)
     api: APIConfig = Field(default_factory=APIConfig)
-    anthropic: AnthropicConfig = Field(default_factory=AnthropicConfig)
+    llm: LLMConfig = Field(default_factory=LLMConfig)  # LLM configuration for multiple providers
     processing: ProcessingConfig = Field(default_factory=ProcessingConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
 
@@ -83,31 +109,47 @@ def load_config_from_file(path: Path) -> Dict[str, Any]:
     # Convert to dictionary
     result = {}
     for section in config.sections():
-        result[section] = {}
-        for key, value in config[section].items():
-            # Try to parse values
-            try:
-                # Handle boolean values
-                if value.lower() in ("true", "yes", "1"):
-                    result[section][key] = True
-                elif value.lower() in ("false", "no", "0"):
-                    result[section][key] = False
-                # Handle numeric values
-                elif value.isdigit():
-                    result[section][key] = int(value)
-                elif value.replace(".", "", 1).isdigit():
-                    result[section][key] = float(value)
-                # Handle lists
-                elif "," in value:
-                    result[section][key] = [v.strip() for v in value.split(",")]
-                # Otherwise, keep as string
-                else:
-                    result[section][key] = value
-            except Exception:
-                # Fall back to string if parsing fails
-                result[section][key] = value
+        # Handle nested sections (e.g., llm.default)
+        if "." in section:
+            parent, child = section.split(".", 1)
+            if parent not in result:
+                result[parent] = {}
+            if isinstance(result[parent], dict):  # Ensure it's a dict
+                result[parent][child] = {}
+                for key, value in config[section].items():
+                    # Try to parse values
+                    result[parent][child][key] = parse_config_value(value)
+        else:
+            result[section] = {}
+            for key, value in config[section].items():
+                # Try to parse values
+                result[section][key] = parse_config_value(value)
                 
     return result
+
+
+def parse_config_value(value: str) -> Any:
+    """Parse a configuration value into the appropriate type."""
+    try:
+        # Handle boolean values
+        if value.lower() in ("true", "yes", "1"):
+            return True
+        elif value.lower() in ("false", "no", "0"):
+            return False
+        # Handle numeric values
+        elif value.isdigit():
+            return int(value)
+        elif value.replace(".", "", 1).isdigit():
+            return float(value)
+        # Handle lists
+        elif "," in value:
+            return [v.strip() for v in value.split(",")]
+        # Otherwise, keep as string
+        else:
+            return value
+    except Exception:
+        # Fall back to string if parsing fails
+        return value
 
 
 def load_config() -> Config:
@@ -127,34 +169,141 @@ def load_config() -> Config:
             config_dict.update(load_config_from_file(config_path))
             break
     
-    # Override with environment variables
-    # Format: LLM_DOCS__SECTION__KEY
+    # Override with environment variables using python-decouple
+    # Format: LLM_DOCS__SECTION__KEY or LLM_DOCS__SECTION__SUBSECTION__KEY
+    # First, prepare a list of expected environment variables
+    expected_env_vars = []
+    
+    # Add standard config patterns
+    for section in ["database", "api", "llm", "processing", "logging"]:
+        for key in ["url", "host", "port", "level", "file", "format", "echo", "enable_auth", "docs_dir", "distilled_docs_dir"]:
+            expected_env_vars.append(f"LLM_DOCS__{section.upper()}__{key.upper()}")
+    
+    # Add LLM config patterns for each provider section
+    for section in ["default", "distillation", "browser_exploration", "doc_extraction"]:
+        for key in ["provider", "model", "api_key", "max_tokens", "temperature"]:
+            expected_env_vars.append(f"LLM_DOCS__LLM__{section.upper()}__{key.upper()}")
+    
+    # Check each expected environment variable
+    for env_var in expected_env_vars:
+        try:
+            value = config_decouple(env_var, default=None)
+            if value is not None:
+                parts = env_var.split("__")
+                
+                if len(parts) == 3:
+                    # Simple section.key format
+                    _, section, key = parts
+                    section = section.lower()
+                    key = key.lower()
+                    
+                    if section not in config_dict:
+                        config_dict[section] = {}
+                    
+                    # Parse the value
+                    config_dict[section][key] = parse_config_value(value)
+                        
+                elif len(parts) == 4:
+                    # Nested section.subsection.key format
+                    _, section, subsection, key = parts
+                    section = section.lower()
+                    subsection = subsection.lower()
+                    key = key.lower()
+                    
+                    if section not in config_dict:
+                        config_dict[section] = {}
+                    
+                    if subsection not in config_dict[section]:
+                        config_dict[section][subsection] = {}
+                    
+                    # Parse the value
+                    config_dict[section][subsection][key] = parse_config_value(value)
+        except Exception:
+            # If decouple fails, fall back to os.environ for backward compatibility
+            pass
+    
+    # Fall back to direct environment variables for backward compatibility
     for key, value in os.environ.items():
         if key.startswith("LLM_DOCS__"):
             parts = key.split("__")
+            
             if len(parts) == 3:
+                # Simple section.key format
                 _, section, key = parts
                 section = section.lower()
                 key = key.lower()
                 
                 if section not in config_dict:
                     config_dict[section] = {}
-                    
+                
                 # Parse the value
-                if value.lower() in ("true", "yes", "1"):
-                    config_dict[section][key] = True
-                elif value.lower() in ("false", "no", "0"):
-                    config_dict[section][key] = False
-                elif value.isdigit():
-                    config_dict[section][key] = int(value)
-                elif value.replace(".", "", 1).isdigit():
-                    config_dict[section][key] = float(value)
-                else:
-                    config_dict[section][key] = value
+                config_dict[section][key] = parse_config_value(value)
+                    
+            elif len(parts) == 4:
+                # Nested section.subsection.key format
+                _, section, subsection, key = parts
+                section = section.lower()
+                subsection = subsection.lower()
+                key = key.lower()
+                
+                if section not in config_dict:
+                    config_dict[section] = {}
+                
+                if subsection not in config_dict[section]:
+                    config_dict[section][subsection] = {}
+                
+                # Parse the value
+                config_dict[section][subsection][key] = parse_config_value(value)
     
-    # Special case for Anthropic API key
-    if "ANTHROPIC_API_KEY" in os.environ and "anthropic" in config_dict:
-        config_dict["anthropic"]["api_key"] = os.environ["ANTHROPIC_API_KEY"]
+    # Check for API keys from environment variables
+    # Support all providers
+    provider_env_vars = {
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+        "google": "GOOGLE_API_KEY",
+        "mistral": "MISTRAL_API_KEY",
+        "azure": "AZURE_OPENAI_API_KEY",
+        "huggingface": "HUGGINGFACE_API_KEY",
+        "groq": "GROQ_API_KEY",
+        "sambanova": "SAMBANOVA_API_KEY",
+        "watsonx": "WATSONX_API_KEY",
+        "ollama": "OLLAMA_API_KEY"
+    }
+    
+    # Add llm section if it doesn't exist
+    if "llm" not in config_dict:
+        config_dict["llm"] = {}
+        
+    # Add default section if it doesn't exist
+    if "default" not in config_dict["llm"]:
+        config_dict["llm"]["default"] = {}
+    
+    # Check each provider API key using decouple
+    for provider, env_var in provider_env_vars.items():
+        try:
+            # Try to get the API key from decouple
+            api_key = config_decouple(env_var, default=None)
+            
+            if api_key:
+                # If this is the provider in default config, add the API key
+                if config_dict["llm"]["default"].get("provider") == provider:
+                    config_dict["llm"]["default"]["api_key"] = api_key
+                
+                # Also check other sections
+                for section in ["distillation", "browser_exploration", "doc_extraction"]:
+                    if section in config_dict["llm"] and config_dict["llm"][section].get("provider") == provider:
+                        config_dict["llm"][section]["api_key"] = api_key
+        except Exception:
+            # Fall back to checking environment variables directly for backward compatibility
+            if env_var in os.environ:
+                # If this is the provider in default config, add the API key
+                if config_dict["llm"]["default"].get("provider") == provider:
+                    config_dict["llm"]["default"]["api_key"] = os.environ[env_var]
+                
+                # Also check other sections
+                for section in ["distillation", "browser_exploration", "doc_extraction"]:
+                    if section in config_dict["llm"] and config_dict["llm"][section].get("provider") == provider:
+                        config_dict["llm"][section]["api_key"] = os.environ[env_var]
         
     # Create the config object
     return Config(**config_dict)
