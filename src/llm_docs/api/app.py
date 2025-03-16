@@ -18,7 +18,7 @@ from sqlalchemy.future import select
 from llm_docs.distillation import DocumentationDistiller
 from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
-from llm_docs.storage.database import async_session_maker, get_async_session
+from llm_docs.storage.database import get_async_session, transaction
 from llm_docs.storage.models import (
     DistillationJob,
     DistillationJobStatus,
@@ -96,7 +96,7 @@ app.mount("/docs/distilled", StaticFiles(directory="distilled_docs"), name="dist
 # Background task for processing packages
 async def process_package(package_id: int):
     """Background task to extract and distill documentation for a package."""
-    async with async_session_maker() as session:
+    async with transaction() as session:
         try:
             # Get the package
             result = await session.execute(select(Package).where(Package.id == package_id))
@@ -167,10 +167,12 @@ async def process_package(package_id: int):
                 package = result.scalar_one_or_none()
                 
                 if package:
-                    package.status = PackageStatus.DISTILLATION_FAILED
-                    session.add(package)
+                    # Only update if not already in a final state
+                    if package.status not in [PackageStatus.DISTILLATION_COMPLETED, PackageStatus.DISTILLATION_FAILED]:
+                        package.status = PackageStatus.DISTILLATION_FAILED
+                        session.add(package)
                     
-                    # Update job if exists
+                    # Update job if exists and not in final state
                     job_result = await session.execute(
                         select(DistillationJob)
                         .where(DistillationJob.package_id == package_id)
@@ -178,14 +180,14 @@ async def process_package(package_id: int):
                     )
                     job = job_result.scalar_first()
                     
-                    if job:
+                    if job and job.status not in ["completed", "failed"]:
                         job.status = DistillationJobStatus.FAILED
                         job.error_message = str(e)
+                        job.completed_at = datetime.now()
                         session.add(job)
                         
                     await session.commit()
             except Exception as inner_error:
-                # If we can't update the database, just log the error
                 console.print(f"[bold red]Failed to update package status for {package_id}: {inner_error}[/bold red]")
 
 

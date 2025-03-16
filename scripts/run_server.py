@@ -4,6 +4,7 @@ Script to run the llm_docs API server.
 """
 
 import argparse
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -62,7 +63,7 @@ def main():
     # Initialize database if needed
     if args.init_db or not os.path.exists("llm_docs.db"):
         console.print("[yellow]Initializing database...[/yellow]")
-        init_db()
+        asyncio.run(init_db())  # Run async function in sync context
     
     # Start the server
     console.print(f"[green]Starting API server at http://{args.host}:{args.port}[/green]")

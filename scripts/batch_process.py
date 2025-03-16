@@ -18,11 +18,14 @@ from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from sqlalchemy.future import select
 
+from llm_docs.config import config
 from llm_docs.distillation import DocumentationDistiller
 from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
-from llm_docs.storage.database import async_session_maker, init_db
+from llm_docs.storage.database import init_db, transaction
 from llm_docs.storage.models import DistillationJob, Package, PackageStatus
+
+db_path = config.database.url.replace("sqlite:///", "")
 
 # Create rich console
 console = Console()
@@ -52,7 +55,8 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
             return False
         
         # Update package in session
-        async with async_session_maker() as session:
+        async with transaction() as session:
+
             # Get fresh package from database
             result = await session.execute(select(Package).where(Package.id == package.id))
             db_package = result.scalar_one()
@@ -101,6 +105,7 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
                     db_job.status = "failed"
                     db_job.error_message = "Distillation failed"
                     db_job.completed_at = datetime.now()
+                    db_job.chunks_processed = 0  # Set to 0 to indicate processing failed
                     session.add(db_job)
                     await session.commit()
                     
@@ -135,7 +140,7 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
         
         # Update package status to failed
         try:
-            async with async_session_maker() as session:
+            async with transaction() as session:
                 result = await session.execute(select(Package).where(Package.id == package.id))
                 db_package = result.scalar_one_or_none()
                 if db_package:
@@ -160,7 +165,7 @@ async def batch_process(package_names: List[str], max_parallel: int = 1, extract
     # Find or create packages
     packages = []
     
-    async with async_session_maker() as session:
+    async with transaction() as session:
         for name in package_names:
             result = await session.execute(select(Package).where(Package.name == name))
             package = result.scalar_one_or_none()
@@ -235,7 +240,7 @@ async def async_main(args):
     
     if not package_names and args.top > 0:
         # Get top packages from PyPI
-        async with async_session_maker() as session:
+        async with transaction() as session:
             discovery = PackageDiscovery(session)
             console.print(f"[cyan]Discovering top {args.top} packages...[/cyan]")
             packages = await discovery.discover_and_store_packages(args.top)

@@ -3,6 +3,7 @@ Database connection and session management for llm_docs.
 """
 
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncGenerator
 
@@ -98,3 +99,17 @@ async def reset_db() -> None:
     except Exception as e:
         console.print(f"[bold red]Error resetting database: {e}[/bold red]")
         raise
+
+@asynccontextmanager
+async def transaction():
+    """
+    Context manager for database transactions.
+    Automatically rolls back if an exception occurs.
+    """
+    async with transaction() as session:
+        try:
+            yield session
+            await session.commit()
+        except Exception:
+            await session.rollback()
+            raise    

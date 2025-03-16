@@ -2,6 +2,7 @@
 Dependencies for the FastAPI application.
 """
 
+import threading
 import time
 from typing import Callable, Dict, Optional
 
@@ -28,7 +29,8 @@ class RateLimiter:
         """
         self.rate_limit = rate_limit
         self.window_seconds = window_seconds
-        self.requests: Dict[str, Dict[float, int]] = {}
+        self.requests = {}
+        self.lock = threading.Lock()
         
     def is_rate_limited(self, key: str) -> bool:
         """
@@ -42,10 +44,11 @@ class RateLimiter:
         """
         now = time.time()
         
-        # Initialize if key not seen before
-        if key not in self.requests:
-            self.requests[key] = {now: 1}
-            return False
+        with self.lock:
+            # Initialize if key not seen before
+            if key not in self.requests:
+                self.requests[key] = {now: 1}
+                return False
             
         # Clean up old entries
         self.requests[key] = {

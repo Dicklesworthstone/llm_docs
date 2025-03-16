@@ -14,11 +14,14 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 from rich.table import Table
 from sqlalchemy.future import select
 
+from llm_docs.config import config
 from llm_docs.distillation import DocumentationDistiller
 from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
-from llm_docs.storage.database import async_session_maker, init_db, reset_db
+from llm_docs.storage.database import init_db, reset_db, transaction
 from llm_docs.storage.models import DistillationJob, Package, PackageStatus
+
+db_path = config.database.url.replace("sqlite:///", "")
 
 # Create Typer app
 app = typer.Typer(
@@ -75,7 +78,7 @@ def discover(
 ):
     """Discover packages from PyPI."""
     async def run():
-        async with async_session_maker() as session:
+        async with transaction() as session:
             # Initialize the package discovery
             discovery = PackageDiscovery(session)
             
@@ -156,8 +159,7 @@ def process(
 ):
     """Process a specific package."""
     async def run():
-        async with async_session_maker() as session:
-            # Find the package
+        async with transaction() as session:            # Find the package
             result = await session.execute(
                 select(Package).where(Package.name == package_name)
             )
@@ -324,8 +326,7 @@ def list_packages(
 ):
     """List packages in the database."""
     async def run():
-        async with async_session_maker() as session:
-            # Build query
+        async with transaction() as session:            # Build query
             query = select(Package)
             
             if status:
@@ -388,8 +389,7 @@ def show_package(
 ):
     """Show detailed information about a specific package."""
     async def run():
-        async with async_session_maker() as session:
-            # Find the package
+        async with transaction() as session:            # Find the package
             result = await session.execute(
                 select(Package).where(Package.name == package_name)
             )
@@ -462,7 +462,7 @@ def serve(
     
     # Initialize database if it doesn't exist
     async def async_init():
-        if not os.path.exists("llm_docs.db"):
+        if not os.path.exists(db_path):
             console.print("[yellow]Database not initialized. Initializing now...[/yellow]")
             await init_db()
     
@@ -528,8 +528,7 @@ def batch_process(
         
         async def process_one(name):
             async with semaphore:
-                async with async_session_maker() as session:
-                    # Get or create package
+                async with transaction() as session:                    # Get or create package
                     result = await session.execute(
                         select(Package).where(Package.name == name)
                     )
@@ -652,8 +651,7 @@ def batch_process(
 def stats():
     """Show statistics about processed packages and documentation."""
     async def run():
-        async with async_session_maker() as session:
-            # Count packages by status
+        async with transaction() as session:            # Count packages by status
             total_result = await session.execute(select(Package))
             total_packages = len(total_result.scalars().all())
             

@@ -2,11 +2,12 @@
 Tests for the documentation distillation module.
 """
 
-import pytest
-from unittest.mock import patch, AsyncMock, MagicMock
-import tempfile
 import os
+import tempfile
 from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from llm_docs.distillation import DocumentationDistiller
 from llm_docs.storage.models import Package
@@ -134,3 +135,33 @@ async def test_distill_documentation():
                 assert "Distilled chunk 2" in content
                 assert "Distilled chunk 3" in content
                 assert "Additional content" in content
+
+@pytest.mark.asyncio
+async def test_distill_chunk_retry_on_error():
+    """Test retrying when API call fails."""
+    with patch('aisuite.Client.chat.completions.create') as mock_create:
+        # Simulate API error on first call, success on second
+        mock_message = MagicMock()
+        mock_message.choices = [MagicMock(message=MagicMock(content="Distilled content"))]
+        mock_create.side_effect = [
+            Exception("API Error"),
+            mock_message
+        ]
+        
+        # Create distiller with short retry delay
+        with tempfile.TemporaryDirectory() as temp_dir:
+            distiller = DocumentationDistiller(output_dir=temp_dir, retry_delay=0.1)
+            
+            # Call the method
+            result = await distiller.distill_chunk(
+                package_name="test-package",
+                chunk_content="Original content",
+                part_num=1,
+                num_parts=3
+            )
+            
+            # Check the result
+            assert result == "Distilled content"
+            
+            # Check that the API was called twice
+            assert mock_create.call_count == 2

@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
 from tqdm import tqdm
 
+from llm_docs.storage.database import transaction
 from llm_docs.storage.models import Package, PackageStats
 
 # Initialize console for rich output
@@ -199,11 +200,28 @@ class PackageDiscovery:
         except Exception as e:
             console.print(f"[yellow]Error fetching stats for {package_name}: {str(e)}[/yellow]")
             return {"data": {"last_month": 0}}
-
-    async def _store_package_db(self, package_name: str, monthly_downloads: int, description: Optional[str] = None) -> Package:
+        
+    async def _store_package_db(self, package_name: str, monthly_downloads: int, description: Optional[str] = None, session=None) -> Package:
         """Store package in database using async operations."""
+        from llm_docs.storage.database import transaction
+        
+        # Use provided session or create a transaction
+        if session is not None:
+            # Use the provided session directly
+            return await self._store_package_with_session(
+                session, package_name, monthly_downloads, description
+            )
+        else:
+            # Create a new transaction
+            async with transaction() as session:
+                return await self._store_package_with_session(
+                    session, package_name, monthly_downloads, description
+                )
+                
+    async def _store_package_with_session(self, session, package_name: str, monthly_downloads: int, description: Optional[str] = None) -> Package:
+        """Internal helper to store package using a specific session."""
         # Check if package already exists in database
-        result = await self.db_session.execute(
+        result = await session.execute(
             select(Package).where(Package.name == package_name)
         )
         existing_package = result.scalar_one_or_none()
@@ -215,9 +233,8 @@ class PackageDiscovery:
                 monthly_downloads=monthly_downloads,
                 recorded_at=datetime.now()
             )
-            self.db_session.add(package_stats)
-            await self.db_session.commit()
-            await self.db_session.refresh(existing_package)
+            session.add(package_stats)
+            await session.refresh(existing_package)
             
             return existing_package
         else:
@@ -228,8 +245,8 @@ class PackageDiscovery:
                 discovery_date=datetime.now(),
                 priority=monthly_downloads,  # Use downloads as initial priority
             )
-            self.db_session.add(new_package)
-            await self.db_session.flush()  # To get the ID
+            session.add(new_package)
+            await session.flush()  # To get the ID
             
             # Add stats
             package_stats = PackageStats(
@@ -237,12 +254,11 @@ class PackageDiscovery:
                 monthly_downloads=monthly_downloads,
                 recorded_at=datetime.now()
             )
-            self.db_session.add(package_stats)
-            await self.db_session.commit()
-            await self.db_session.refresh(new_package)
+            session.add(package_stats)
+            await session.refresh(new_package)
             
             return new_package
-
+    
     async def get_package_info(self, package_name: str) -> Tuple[int, Optional[str]]:
         """
         Get package information including downloads and description.
@@ -274,76 +290,112 @@ class PackageDiscovery:
         
         return downloads, description
 
-    async def discover_and_store_packages(self, limit: int = 1000) -> List[Package]:
-        """
-        Discover top packages and store them in the database.
+async def discover_and_store_packages(self, limit: int = 1000) -> List[Package]:
+    """
+    Discover top packages and store them in the database.
+    
+    Args:
+        limit: Maximum number of packages to retrieve
         
-        Args:
-            limit: Maximum number of packages to retrieve
-            
-        Returns:
-            List of Package objects stored in the database
-        """
-        top_packages_data = await self.get_top_packages_from_pypi(limit)
-        top_packages = [p["name"] for p in top_packages_data]
+    Returns:
+        List of Package objects stored in the database
+    """
+    
+    top_packages_data = await self.get_top_packages_from_pypi(limit)
+    top_packages = [p["name"] for p in top_packages_data]
+    
+    stored_packages = []
+    
+    with tqdm(total=len(top_packages), desc="Processing packages") as pbar:
+        # Use a semaphore to limit concurrent API calls
+        semaphore = asyncio.Semaphore(10)
         
-        stored_packages = []
-        
-        with tqdm(total=len(top_packages), desc="Processing packages") as pbar:
-            # Use a semaphore to limit concurrent API calls
-            semaphore = asyncio.Semaphore(10)
-            
-            async def process_package(package_name: str) -> Optional[Package]:
-                async with semaphore:
-                    try:
-                        # Get package information
-                        monthly_downloads, description = await self.get_package_info(package_name)
-                        
-                        # Store in database
-                        package = await self._store_package_db(
-                            package_name=package_name,
-                            monthly_downloads=monthly_downloads,
-                            description=description
+        async def process_package(package_name: str) -> Optional[Package]:
+            async with semaphore:
+                try:
+                    # Get package information
+                    monthly_downloads, description = await self.get_package_info(package_name)
+                    
+                    # Store in database using transaction
+                    async with transaction() as session:
+                        # Check if package already exists in database
+                        result = await session.execute(
+                            select(Package).where(Package.name == package_name)
                         )
+                        existing_package = result.scalar_one_or_none()
                         
-                        pbar.update(1)
-                        return package
-                    except Exception as e:
-                        console.print(f"[red]Error processing {package_name}: {str(e)}[/red]")
-                        pbar.update(1)
-                        return None
-            
-            # Process packages concurrently
-            tasks = [process_package(name) for name in top_packages]
-            results = await asyncio.gather(*tasks)
-            
-            # Filter out None results
-            stored_packages = [p for p in results if p is not None]
+                        if existing_package:
+                            # Update existing package
+                            package_stats = PackageStats(
+                                package_id=existing_package.id,
+                                monthly_downloads=monthly_downloads,
+                                recorded_at=datetime.now()
+                            )
+                            session.add(package_stats)
+                            await session.refresh(existing_package)
+                            package = existing_package
+                        else:
+                            # Create new package
+                            new_package = Package(
+                                name=package_name,
+                                description=description,
+                                discovery_date=datetime.now(),
+                                priority=monthly_downloads,  # Use downloads as initial priority
+                            )
+                            session.add(new_package)
+                            await session.flush()  # To get the ID
+                            
+                            # Add stats
+                            package_stats = PackageStats(
+                                package_id=new_package.id,
+                                monthly_downloads=monthly_downloads,
+                                recorded_at=datetime.now()
+                            )
+                            session.add(package_stats)
+                            await session.refresh(new_package)
+                            package = new_package
+                    
+                    pbar.update(1)
+                    return package
+                except Exception as e:
+                    console.print(f"[red]Error processing {package_name}: {str(e)}[/red]")
+                    pbar.update(1)
+                    return None
         
-        console.print(f"[green]Discovered and stored {len(stored_packages)} packages[/green]")
-        return stored_packages
+        # Process packages concurrently
+        tasks = [process_package(name) for name in top_packages]
+        results = await asyncio.gather(*tasks)
         
-    async def get_next_packages_to_process(self, limit: int = 10) -> List[Package]:
-        """
-        Get the next batch of packages to process based on priority and processing status.
+        # Filter out None results
+        stored_packages = [p for p in results if p is not None]
+    
+    console.print(f"[green]Discovered and stored {len(stored_packages)} packages[/green]")
+    return stored_packages
+
+async def get_next_packages_to_process(self, limit: int = 10) -> List[Package]:
+    """
+    Get the next batch of packages to process based on priority and processing status.
+    
+    Args:
+        limit: Maximum number of packages to retrieve
         
-        Args:
-            limit: Maximum number of packages to retrieve
-            
-        Returns:
-            List of Package objects to process next
-        """
-        # Get packages that haven't been processed yet, ordered by priority
-        result = await self.db_session.execute(
+    Returns:
+        List of Package objects to process next
+    """
+    from llm_docs.storage.database import transaction
+    
+    # Get packages that haven't been processed yet, ordered by priority
+    async with transaction() as session:
+        result = await session.execute(
             select(Package)
-            .where(Package.original_doc_path is None)
+            .where(Package.original_doc_path.is_(None))  # Fixed syntax: is_(None) instead of is None
             .order_by(Package.priority.desc())
             .limit(limit)
         )
         packages = result.scalars().all()
-        
-        return packages
+    
+    return packages
 
-    async def close(self):
-        """Close the HTTP client."""
-        await self.client.aclose()
+async def close(self):
+    """Close the HTTP client."""
+    await self.client.aclose()
