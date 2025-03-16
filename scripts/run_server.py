@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import uvicorn
+from rich.console import Console
 
 # Add the src directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -16,6 +17,8 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from llm_docs.config import config
 from llm_docs.storage.database import init_db
 
+# Initialize console
+console = Console()
 
 def main():
     """Run the server."""
@@ -42,21 +45,64 @@ def main():
         action="store_true",
         help="Initialize the database if it doesn't exist"
     )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of worker processes"
+    )
+    parser.add_argument(
+        "--no-access-log",
+        action="store_true",
+        help="Disable access logging"
+    )
     
     args = parser.parse_args()
     
     # Initialize database if needed
     if args.init_db or not os.path.exists("llm_docs.db"):
-        print("Initializing database...")
+        console.print("[yellow]Initializing database...[/yellow]")
         init_db()
     
     # Start the server
-    print(f"Starting API server at http://{args.host}:{args.port}")
+    console.print(f"[green]Starting API server at http://{args.host}:{args.port}[/green]")
+    console.print(f"[blue]Workers: {args.workers}, Reload: {args.reload}[/blue]")
+    console.print("Press Ctrl+C to stop.")
+    
+    # Configure logging
+    log_config = None
+    if args.no_access_log:
+        log_config = {
+            "version": 1,
+            "disable_existing_loggers": False,
+            "formatters": {
+                "default": {
+                    "format": "%(asctime)s [%(process)d] [%(levelname)s] %(message)s",
+                    "datefmt": "%Y-%m-%d %H:%M:%S"
+                }
+            },
+            "handlers": {
+                "default": {
+                    "formatter": "default",
+                    "class": "logging.StreamHandler",
+                    "stream": "ext://sys.stderr"
+                }
+            },
+            "loggers": {
+                "uvicorn": {"handlers": ["default"], "level": "INFO"},
+                "uvicorn.error": {"handlers": ["default"], "level": "INFO", "propagate": False},
+                "uvicorn.access": {"handlers": ["default"], "level": "ERROR", "propagate": False},
+            }
+        }
+    
+    # Start Uvicorn with the configured settings
     uvicorn.run(
         "llm_docs.api.app:app",
         host=args.host,
         port=args.port,
-        reload=args.reload
+        reload=args.reload,
+        workers=args.workers if not args.reload else 1,  # Cannot use multiple workers with reload
+        log_config=log_config
     )
 
 

@@ -24,6 +24,7 @@ dependencies = [
     "httpx",
     "aiolimiter",
     "aiofiles",
+    "aiosqlite",
     "psutil",
     "async-timeout",
     "browser-use",

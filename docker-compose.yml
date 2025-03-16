@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  llm_docs:
+    build: .
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./docs:/app/docs
+      - ./distilled_docs:/app/distilled_docs
+      - ./llm_docs.db:/app/llm_docs.db
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - LLM_DOCS__API__HOST=0.0.0.0
+      - LLM_DOCS__API__PORT=8000
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Uncomment to add a simple dashboard UI
+  # dashboard:
+  #   image: nginx:alpine
+  #   ports:
+  #     - "8080:80"
+  #   volumes:
+  #     - ./dashboard:/usr/share/nginx/html
+  #   depends_on:
+  #     - llm_docs

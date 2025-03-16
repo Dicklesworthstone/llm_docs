@@ -2,10 +2,11 @@
 SQLModel models for the llm_docs database.
 """
 
-from typing import Optional, List
 from datetime import datetime
-from enum import Enum, auto
-from sqlmodel import Field, SQLModel, Relationship
+from enum import Enum
+from typing import List, Optional
+
+from sqlmodel import Field, Relationship, SQLModel
 
 
 class PackageStatus(str, Enum):
@@ -117,6 +118,17 @@ class ProcessingMetrics(SQLModel, table=True):
     avg_distillation_time_seconds: Optional[float] = None
 
 
-def create_db_and_tables(engine):
+# This function remains mostly the same since the async handling is done in database.py
+async def create_db_and_tables(engine):
     """Create database tables."""
-    SQLModel.metadata.create_all(engine)
+    # The function is declared as async to match the usage in database.py,
+    # but the actual call to SQLModel.metadata.create_all is handled by
+    # run_sync in the database.py file.
+    from sqlalchemy.ext.asyncio import AsyncEngine
+    
+    if isinstance(engine, AsyncEngine):
+        # Called from database.py which handles the async context
+        return
+    else:
+        # For sync usage if needed
+        SQLModel.metadata.create_all(engine)

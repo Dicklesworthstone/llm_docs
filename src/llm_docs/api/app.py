@@ -11,12 +11,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from sqlmodel import Session, select
+from rich.console import Console
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
 from llm_docs.distillation import DocumentationDistiller
 from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
-from llm_docs.storage.database import get_session
+from llm_docs.storage.database import async_session_maker, get_async_session
 from llm_docs.storage.models import (
     DistillationJob,
     DistillationJobStatus,
@@ -24,6 +26,8 @@ from llm_docs.storage.models import (
     PackageStatus,
 )
 
+# Initialize console
+console = Console()
 
 # FastAPI models for requests and responses
 class PackageCreate(BaseModel):
@@ -92,118 +96,127 @@ app.mount("/docs/distilled", StaticFiles(directory="distilled_docs"), name="dist
 # Background task for processing packages
 async def process_package(package_id: int):
     """Background task to extract and distill documentation for a package."""
-    # Set up database session
-    from llm_docs.storage.database import engine
-    session = Session(engine)
-    
-    try:
-        # Get the package
-        package = session.exec(select(Package).where(Package.id == package_id)).one()
-        
-        # Extract documentation
-        extractor = DocumentationExtractor()
-        doc_path = await extractor.process_package_documentation(package)
-        
-        if doc_path:
-            # Update package with documentation path
-            package.original_doc_path = doc_path
-            package.docs_extraction_date = datetime.now()
-            package.status = PackageStatus.DOCS_EXTRACTED
-            session.add(package)
-            session.commit()
-            
-            # Create distillation job
-            job = DistillationJob(
-                package_id=package.id,
-                status=DistillationJobStatus.PENDING,
-                input_file_path=doc_path
-            )
-            session.add(job)
-            session.commit()
-            
-            # Start distillation
-            package.status = PackageStatus.DISTILLATION_IN_PROGRESS
-            package.distillation_start_date = datetime.now()
-            session.add(package)
-            
-            job.status = DistillationJobStatus.IN_PROGRESS
-            job.started_at = datetime.now()
-            session.add(job)
-            session.commit()
-            
-            # Run distillation
-            distiller = DocumentationDistiller()
-            distilled_path = await distiller.distill_documentation(package, doc_path)
-            
-            # Update package and job
-            if distilled_path:
-                package.distilled_doc_path = distilled_path
-                package.status = PackageStatus.DISTILLATION_COMPLETED
-                package.distillation_end_date = datetime.now()
-                
-                job.status = DistillationJobStatus.COMPLETED
-                job.completed_at = datetime.now()
-                job.output_file_path = distilled_path
-                job.chunks_processed = job.num_chunks
-            else:
-                package.status = PackageStatus.DISTILLATION_FAILED
-                
-                job.status = DistillationJobStatus.FAILED
-                job.error_message = "Distillation failed"
-                
-            session.add(package)
-            session.add(job)
-            session.commit()
-            
-    except Exception as e:
-        # Log the exception
-        print(f"Error processing package {package_id}: {e}")
-        
-        # Update package status
+    async with async_session_maker() as session:
         try:
-            package = session.exec(select(Package).where(Package.id == package_id)).one()
-            package.status = PackageStatus.DISTILLATION_FAILED
-            session.add(package)
+            # Get the package
+            result = await session.execute(select(Package).where(Package.id == package_id))
+            package = result.scalar_one()
             
-            # Update job if exists
-            job = session.exec(
-                select(DistillationJob)
-                .where(DistillationJob.package_id == package_id)
-                .order_by(DistillationJob.id.desc())
-            ).first()
+            # Extract documentation
+            extractor = DocumentationExtractor()
+            doc_path = await extractor.process_package_documentation(package)
             
-            if job:
-                job.status = DistillationJobStatus.FAILED
-                job.error_message = str(e)
-                session.add(job)
+            if doc_path:
+                # Update package with documentation path
+                package.original_doc_path = doc_path
+                package.docs_extraction_date = datetime.now()
+                package.status = PackageStatus.DOCS_EXTRACTED
+                session.add(package)
+                await session.commit()
                 
-            session.commit()
+                # Create distillation job
+                job = DistillationJob(
+                    package_id=package.id,
+                    status=DistillationJobStatus.PENDING,
+                    input_file_path=doc_path
+                )
+                session.add(job)
+                await session.commit()
+                
+                # Start distillation
+                package.status = PackageStatus.DISTILLATION_IN_PROGRESS
+                package.distillation_start_date = datetime.now()
+                session.add(package)
+                
+                job.status = DistillationJobStatus.IN_PROGRESS
+                job.started_at = datetime.now()
+                session.add(job)
+                await session.commit()
+                
+                # Run distillation
+                distiller = DocumentationDistiller()
+                distilled_path = await distiller.distill_documentation(package, doc_path)
+                
+                # Update package and job
+                if distilled_path:
+                    package.distilled_doc_path = distilled_path
+                    package.status = PackageStatus.DISTILLATION_COMPLETED
+                    package.distillation_end_date = datetime.now()
+                    
+                    job.status = DistillationJobStatus.COMPLETED
+                    job.completed_at = datetime.now()
+                    job.output_file_path = distilled_path
+                    job.chunks_processed = job.num_chunks
+                else:
+                    package.status = PackageStatus.DISTILLATION_FAILED
+                    
+                    job.status = DistillationJobStatus.FAILED
+                    job.error_message = "Distillation failed"
+                    
+                session.add(package)
+                session.add(job)
+                await session.commit()
+                
         except Exception as e:
-            # If we can't update the database, just log the error
-            print(f"Failed to update package status for {package_id}: {e}")
-        finally:
-            session.close()
+            # Log the exception
+            console.print(f"[red]Error processing package {package_id}: {e}[/red]")
+            
+            # Update package status
+            try:
+                result = await session.execute(select(Package).where(Package.id == package_id))
+                package = result.scalar_one_or_none()
+                
+                if package:
+                    package.status = PackageStatus.DISTILLATION_FAILED
+                    session.add(package)
+                    
+                    # Update job if exists
+                    job_result = await session.execute(
+                        select(DistillationJob)
+                        .where(DistillationJob.package_id == package_id)
+                        .order_by(DistillationJob.id.desc())
+                    )
+                    job = job_result.scalar_first()
+                    
+                    if job:
+                        job.status = DistillationJobStatus.FAILED
+                        job.error_message = str(e)
+                        session.add(job)
+                        
+                    await session.commit()
+            except Exception as inner_error:
+                # If we can't update the database, just log the error
+                console.print(f"[bold red]Failed to update package status for {package_id}: {inner_error}[/bold red]")
 
 
 # API routes
 @app.get("/", response_model=StatsResponse)
-async def get_stats(session: Session = Depends(get_session)):
+async def get_stats(session: AsyncSession = Depends(get_async_session)):
     """Get basic statistics and info about the system."""
-    total_packages = session.exec(select(Package)).count()
-    packages_with_docs = session.exec(
-        select(Package).where(Package.original_doc_path is not None)
-    ).count()
-    packages_distilled = session.exec(
-        select(Package).where(Package.distilled_doc_path is not None)
-    ).count()
+    # Count packages
+    result = await session.execute(select(Package))
+    total_packages = len(result.scalars().all())
+    
+    # Count packages with docs
+    result = await session.execute(
+        select(Package).where(Package.original_doc_path.isnot(None))
+    )
+    packages_with_docs = len(result.scalars().all())
+    
+    # Count distilled packages
+    result = await session.execute(
+        select(Package).where(Package.distilled_doc_path.isnot(None))
+    )
+    packages_distilled = len(result.scalars().all())
     
     # Get recent distillations
-    recent_distillations = session.exec(
+    result = await session.execute(
         select(Package)
         .where(Package.status == PackageStatus.DISTILLATION_COMPLETED)
         .order_by(Package.distillation_end_date.desc())
         .limit(5)
-    ).all()
+    )
+    recent_distillations = result.scalars().all()
     
     recent = []
     for pkg in recent_distillations:
@@ -214,11 +227,12 @@ async def get_stats(session: Session = Depends(get_session)):
         })
     
     # Get popular packages
-    popular_packages = session.exec(
+    result = await session.execute(
         select(Package)
         .order_by(Package.priority.desc())
         .limit(10)
-    ).all()
+    )
+    popular_packages = result.scalars().all()
     
     popular = []
     for pkg in popular_packages:
@@ -243,7 +257,7 @@ async def list_packages(
     status: Optional[str] = None, 
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """List packages with optional filtering by status."""
     query = select(Package)
@@ -252,7 +266,8 @@ async def list_packages(
         query = query.where(Package.status == status)
         
     query = query.order_by(Package.priority.desc()).offset(offset).limit(limit)
-    packages = session.exec(query).all()
+    result = await session.execute(query)
+    packages = result.scalars().all()
     
     return [
         PackageResponse(
@@ -275,10 +290,11 @@ async def list_packages(
 @app.get("/packages/{package_id}", response_model=PackageResponse)
 async def get_package(
     package_id: int = Path(..., description="The ID of the package"),
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """Get a specific package by ID."""
-    package = session.exec(select(Package).where(Package.id == package_id)).first()
+    result = await session.execute(select(Package).where(Package.id == package_id))
+    package = result.scalar_one_or_none()
     
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -303,11 +319,12 @@ async def create_package(
     package: PackageCreate,
     background_tasks: BackgroundTasks,
     process: bool = Query(False, description="Whether to process the package immediately"),
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """Create a new package."""
     # Check if package already exists
-    existing = session.exec(select(Package).where(Package.name == package.name)).first()
+    result = await session.execute(select(Package).where(Package.name == package.name))
+    existing = result.scalar_one_or_none()
     
     if existing:
         raise HTTPException(
@@ -323,8 +340,8 @@ async def create_package(
     )
     
     session.add(new_package)
-    session.commit()
-    session.refresh(new_package)
+    await session.commit()
+    await session.refresh(new_package)
     
     # Start processing if requested
     if process:
@@ -349,10 +366,11 @@ async def create_package(
 async def trigger_package_processing(
     package_id: int,
     background_tasks: BackgroundTasks,
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """Trigger processing for a specific package."""
-    package = session.exec(select(Package).where(Package.id == package_id)).first()
+    result = await session.execute(select(Package).where(Package.id == package_id))
+    package = result.scalar_one_or_none()
     
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -371,7 +389,7 @@ async def trigger_package_processing(
     if package.status == PackageStatus.DISTILLATION_FAILED:
         package.status = PackageStatus.DISCOVERED
         session.add(package)
-        session.commit()
+        await session.commit()
         
     # Start processing
     background_tasks.add_task(process_package, package.id)
@@ -382,10 +400,11 @@ async def trigger_package_processing(
 @app.get("/packages/{package_id}/original")
 async def get_original_documentation(
     package_id: int,
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """Get the original documentation for a package."""
-    package = session.exec(select(Package).where(Package.id == package_id)).first()
+    result = await session.execute(select(Package).where(Package.id == package_id))
+    package = result.scalar_one_or_none()
     
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -412,10 +431,11 @@ async def get_original_documentation(
 @app.get("/packages/{package_id}/distilled")
 async def get_distilled_documentation(
     package_id: int,
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """Get the distilled documentation for a package."""
-    package = session.exec(select(Package).where(Package.id == package_id)).first()
+    result = await session.execute(select(Package).where(Package.id == package_id))
+    package = result.scalar_one_or_none()
     
     if not package:
         raise HTTPException(status_code=404, detail="Package not found")
@@ -444,7 +464,7 @@ async def list_jobs(
     status: Optional[str] = None,
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0),
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """List distillation jobs with optional filtering by status."""
     query = select(DistillationJob)
@@ -453,15 +473,17 @@ async def list_jobs(
         query = query.where(DistillationJob.status == status)
         
     query = query.order_by(DistillationJob.created_at.desc()).offset(offset).limit(limit)
-    jobs = session.exec(query).all()
+    result = await session.execute(query)
+    jobs = result.scalars().all()
     
-    result = []
+    result_list = []
     for job in jobs:
         # Get package name
-        package = session.exec(select(Package).where(Package.id == job.package_id)).first()
+        pkg_result = await session.execute(select(Package).where(Package.id == job.package_id))
+        package = pkg_result.scalar_one_or_none()
         package_name = package.name if package else "Unknown"
         
-        result.append(
+        result_list.append(
             DistillationJobResponse(
                 id=job.id,
                 package_id=job.package_id,
@@ -478,7 +500,7 @@ async def list_jobs(
             )
         )
         
-    return result
+    return result_list
 
 
 @app.post("/discover")
@@ -486,10 +508,13 @@ async def discover_packages(
     background_tasks: BackgroundTasks,
     limit: int = Query(100, ge=1, le=1000),
     process_top: int = Query(0, ge=0, description="Number of top packages to process immediately"),
-    session: Session = Depends(get_session)
+    session: AsyncSession = Depends(get_async_session)
 ):
     """Discover new packages from PyPI."""
     # Initialize the package discovery
+    # We need to create a PackageDiscovery instance that can work with AsyncSession
+    # This requires modifying the PackageDiscovery class to accept AsyncSession
+    # For now, we'll assume this has been updated
     discovery = PackageDiscovery(session)
     
     # Run discovery

@@ -2,30 +2,38 @@
 Pytest configuration for llm_docs tests.
 """
 
+import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlmodel import Session, SQLModel, create_engine
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+from sqlmodel import Session, SQLModel
 
 
-# Use in-memory SQLite for tests
-@pytest.fixture(name="engine")
-def engine_fixture():
-    """Create a SQLite in-memory engine for testing."""
-    engine = create_engine(
-        "sqlite:///:memory:",
+@pytest.fixture(scope="session", name="async_engine")
+def async_engine_fixture():
+    """Create an async SQLite in-memory engine for testing."""
+    engine = create_async_engine(
+        "sqlite+aiosqlite:///:memory:",
         connect_args={"check_same_thread": False}
     )
-    SQLModel.metadata.create_all(engine)
+    async def create_tables():
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.create_all)
+    asyncio.run(create_tables())
     yield engine
-    SQLModel.metadata.drop_all(engine)
+    async def drop_tables():
+        async with engine.begin() as conn:
+            await conn.run_sync(SQLModel.metadata.drop_all)
+    asyncio.run(drop_tables())
 
-
-@pytest.fixture(name="session")
-def session_fixture(engine):
-    """Create a database session for testing."""
-    with Session(engine) as session:
+@pytest.fixture(name="async_session")
+async def async_session_fixture(async_engine):
+    """Create an async database session for testing."""
+    async with AsyncSession(async_engine) as session:
         yield session
+        # Roll back all changes after the test
+        await session.rollback()
 
 
 @pytest.fixture(name="client")

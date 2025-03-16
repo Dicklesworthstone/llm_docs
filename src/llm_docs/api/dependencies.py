@@ -3,11 +3,16 @@ Dependencies for the FastAPI application.
 """
 
 import time
-from typing import Dict
+from typing import Callable, Dict, Optional
 
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
+from rich.console import Console
+from starlette.middleware.base import BaseHTTPMiddleware
 
+# Initialize console
+console = Console()
 
 # Rate limiting
 class RateLimiter:
@@ -83,7 +88,7 @@ def rate_limit(request: Request):
 
 
 # API key authentication
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key")
+API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 # In a real application, you'd store these in a secure database
 API_KEYS = {
@@ -91,7 +96,7 @@ API_KEYS = {
     "admin-key": {"name": "Admin User", "admin": True},
 }
 
-def verify_api_key(api_key: str = Depends(API_KEY_HEADER)) -> Dict:
+def verify_api_key(api_key: Optional[str] = Depends(API_KEY_HEADER)) -> Dict:
     """
     Verify API key and return user info.
     
@@ -104,15 +109,41 @@ def verify_api_key(api_key: str = Depends(API_KEY_HEADER)) -> Dict:
     Raises:
         HTTPException: If API key is invalid
     """
+    if not api_key:
+        raise HTTPException(
+            status_code=401,
+            detail="API key missing",
+            headers={"WWW-Authenticate": "ApiKey"},
+        )
+        
     if api_key in API_KEYS:
         return API_KEYS[api_key]
         
     raise HTTPException(
         status_code=401,
-        detail="Invalid API key"
+        detail="Invalid API key",
+        headers={"WWW-Authenticate": "ApiKey"},
     )
 
-def require_admin(user_info: Dict = None):
+def optional_api_key(api_key: Optional[str] = Depends(API_KEY_HEADER)) -> Optional[Dict]:
+    """
+    Optionally verify API key without requiring it.
+    
+    Args:
+        api_key: API key from request header
+        
+    Returns:
+        User info dictionary if valid, None otherwise
+    """
+    if not api_key:
+        return None
+        
+    if api_key in API_KEYS:
+        return API_KEYS[api_key]
+        
+    return None
+
+def require_admin(user_info: Dict = Depends(verify_api_key)):
     """
     Require admin privileges.
     
@@ -122,9 +153,6 @@ def require_admin(user_info: Dict = None):
     Raises:
         HTTPException: If user is not an admin
     """
-    if user_info is None:
-        user_info = verify_api_key()
-        
     if not user_info.get("admin", False):
         raise HTTPException(
             status_code=403,
@@ -132,3 +160,22 @@ def require_admin(user_info: Dict = None):
         )
         
     return user_info
+
+# Error handling middleware
+class ErrorHandlingMiddleware(BaseHTTPMiddleware):
+    """Middleware to catch and properly format unhandled exceptions."""
+    
+    async def dispatch(self, request: Request, call_next: Callable) -> Response:
+        try:
+            return await call_next(request)
+        except Exception as e:
+            # Log the error
+            console.print(f"[bold red]Unhandled error: {e}[/bold red]")
+            import traceback
+            console.print(traceback.format_exc())
+            
+            # Return a JSON response
+            return JSONResponse(
+                status_code=500,
+                content={"detail": "Internal server error"},
+            )

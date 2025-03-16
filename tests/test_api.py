@@ -4,14 +4,14 @@ Tests for the FastAPI application.
 
 import pytest
 from fastapi.testclient import TestClient
-from unittest.mock import patch, AsyncMock, MagicMock
-import tempfile
-import os
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.future import select
 
-from llm_docs.storage.models import Package, PackageStatus, DistillationJob
+from llm_docs.storage.models import DistillationJob, Package, PackageStatus
 
 
-def test_get_stats(client, session):
+@pytest.mark.asyncio
+async def test_get_stats(client: TestClient, async_session: AsyncSession):
     """Test getting system statistics."""
     # Add some test packages
     packages = [
@@ -36,9 +36,9 @@ def test_get_stats(client, session):
     ]
     
     for package in packages:
-        session.add(package)
+        async_session.add(package)
     
-    session.commit()
+    await async_session.commit()
     
     # Make the request
     response = client.get("/")
@@ -53,7 +53,8 @@ def test_get_stats(client, session):
     assert len(data["recent_distillations"]) == 1
 
 
-def test_list_packages(client, session):
+@pytest.mark.asyncio
+async def test_list_packages(client: TestClient, async_session: AsyncSession):
     """Test listing packages."""
     # Add some test packages
     packages = [
@@ -75,9 +76,9 @@ def test_list_packages(client, session):
     ]
     
     for package in packages:
-        session.add(package)
+        async_session.add(package)
     
-    session.commit()
+    await async_session.commit()
     
     # Make the request
     response = client.get("/packages")
@@ -100,7 +101,8 @@ def test_list_packages(client, session):
     assert data[0]["name"] == "package3"
 
 
-def test_get_package(client, session):
+@pytest.mark.asyncio
+async def test_get_package(client: TestClient, async_session: AsyncSession):
     """Test getting a specific package."""
     # Add a test package
     package = Package(
@@ -111,8 +113,9 @@ def test_get_package(client, session):
         distilled_doc_path="/tmp/distilled.md"
     )
     
-    session.add(package)
-    session.commit()
+    async_session.add(package)
+    await async_session.commit()
+    await async_session.refresh(package)
     
     # Make the request
     response = client.get(f"/packages/{package.id}")
@@ -130,7 +133,8 @@ def test_get_package(client, session):
     assert response.status_code == 404
 
 
-def test_create_package(client, session):
+@pytest.mark.asyncio
+async def test_create_package(client: TestClient, async_session: AsyncSession):
     """Test creating a new package."""
     # Make the request
     response = client.post(
@@ -147,7 +151,10 @@ def test_create_package(client, session):
     assert data["description"] == "A test package"
     
     # Check that the package was created in the database
-    package = session.query(Package).filter(Package.name == "new-package").first()
+    result = await async_session.execute(
+        select(Package).where(Package.name == "new-package")
+    )
+    package = result.scalar_one_or_none()
     assert package is not None
     assert package.name == "new-package"
     assert package.priority == 50
@@ -160,7 +167,8 @@ def test_create_package(client, session):
     assert response.status_code == 400
 
 
-def test_list_jobs(client, session):
+@pytest.mark.asyncio
+async def test_list_jobs(client: TestClient, async_session: AsyncSession):
     """Test listing distillation jobs."""
     # Add a test package
     package = Package(
@@ -168,8 +176,9 @@ def test_list_jobs(client, session):
         status=PackageStatus.DISTILLATION_COMPLETED
     )
     
-    session.add(package)
-    session.commit()
+    async_session.add(package)
+    await async_session.commit()
+    await async_session.refresh(package)
     
     # Add some test jobs
     jobs = [
@@ -188,9 +197,9 @@ def test_list_jobs(client, session):
     ]
     
     for job in jobs:
-        session.add(job)
+        async_session.add(job)
     
-    session.commit()
+    await async_session.commit()
     
     # Make the request
     response = client.get("/jobs")

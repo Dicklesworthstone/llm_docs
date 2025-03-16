@@ -172,3 +172,23 @@ venv/
 .env
 emoji_cache.json
 .env
+
+# mypy
+.mypy_cache/
+
+# Project specific
+llm_docs.db
+cache/
+docs/*.md
+distilled_docs/*.md
+!docs/README.md
+!distilled_docs/README.md
+
+# IDE specific files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS specific files
+.DS_Store
