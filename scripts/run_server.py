@@ -22,13 +22,38 @@ from llm_docs.storage.database import init_db
 console = Console()
 
 def init_db_sync():
-    """Run the async init_db function in a new event loop."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
+    """Run the async init_db function in a synchronous context."""
     try:
-        loop.run_until_complete(init_db())
-    finally:
-        loop.close()
+        # Use asyncio.run for proper event loop management
+        asyncio.run(init_db())
+    except RuntimeError as e:
+        # Handle case where there's already an event loop (e.g., in a notebook environment)
+        if "already running" in str(e):
+            # Get the current loop if one exists
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Create a new loop if the current one is running
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        loop.run_until_complete(init_db())
+                    finally:
+                        # Close only if we created it
+                        loop.close()
+                        asyncio.set_event_loop(None)
+                else:
+                    # Use the existing loop if it's not running
+                    loop.run_until_complete(init_db())
+            except Exception as inner_e:
+                console.print(f"[red]Error initializing database: {inner_e}[/red]")
+                raise
+        else:
+            # Re-raise other runtime errors
+            raise
+    except Exception as e:
+        console.print(f"[red]Error initializing database: {e}[/red]")
+        raise
 
 def main():
     """Run the server."""

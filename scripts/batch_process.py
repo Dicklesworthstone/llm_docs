@@ -46,7 +46,7 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
         console.print(f"[cyan]Processing {package.name}...[/cyan]")
         start_time = datetime.now()
         
-        # Extract documentation
+        # Extract documentation (outside transaction)
         extractor = DocumentationExtractor()
         doc_path = await extractor.process_package_documentation(package)
         
@@ -54,9 +54,8 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
             console.print(f"[red]Failed to extract documentation for {package.name}[/red]")
             return False
         
-        # Update package in session
+        # Update package with extraction results
         async with transaction() as session:
-
             # Get fresh package from database
             result = await session.execute(select(Package).where(Package.id == package.id))
             db_package = result.scalar_one()
@@ -66,69 +65,72 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
             db_package.docs_extraction_date = datetime.now()
             db_package.status = PackageStatus.DOCS_EXTRACTED
             session.add(db_package)
-            await session.commit()
             
-            # Create distillation job if not extract_only
-            if not extract_only:
-                job = DistillationJob(
-                    package_id=db_package.id,
-                    status=DistillationJobStatus.IN_PROGRESS,
-                    started_at=datetime.now(),
-                    input_file_path=doc_path
-                )
-                session.add(job)
-                
-                # Update package status
-                db_package.status = PackageStatus.DISTILLATION_IN_PROGRESS
-                db_package.distillation_start_date = datetime.now()
-                session.add(db_package)
+            # If extract_only, commit and return
+            if extract_only:
                 await session.commit()
-                await session.refresh(job)
+                elapsed = datetime.now() - start_time
+                console.print(f"[green]Successfully extracted documentation for {package.name} in {elapsed.total_seconds():.1f} seconds[/green]")
+                return True
                 
-                # Distill documentation
-                distiller = DocumentationDistiller()
-                distilled_path = await distiller.distill_documentation(db_package, doc_path)
-                
-                if not distilled_path:
-                    console.print(f"[red]Distillation failed for {package.name}[/red]")
-                    
-                    # Update job and package with failure
-                    result = await session.execute(select(Package).where(Package.id == package.id))
-                    db_package = result.scalar_one()
-                    db_package.status = PackageStatus.DISTILLATION_FAILED
-                    session.add(db_package)
-                    
-                    result = await session.execute(
-                        select(DistillationJob).where(DistillationJob.id == job.id)
-                    )
-                    db_job = result.scalar_one()
-                    db_job.status = DistillationJobStatus.FAILED
-                    db_job.error_message = "Distillation failed"
-                    db_job.completed_at = datetime.now()
-                    db_job.chunks_processed = 0  # Set to 0 to indicate processing failed
-                    session.add(db_job)
-                    await session.commit()
-                    
-                    return False
-                
-                # Update package and job with success
-                result = await session.execute(select(Package).where(Package.id == package.id))
-                db_package = result.scalar_one()
-                db_package.distilled_doc_path = distilled_path
-                db_package.status = PackageStatus.DISTILLATION_COMPLETED
-                db_package.distillation_end_date = datetime.now()
+            # Create distillation job in same transaction
+            job = DistillationJob(
+                package_id=db_package.id,
+                status=DistillationJobStatus.IN_PROGRESS,
+                started_at=datetime.now(),
+                input_file_path=doc_path
+            )
+            session.add(job)
+            
+            # Update package status
+            db_package.status = PackageStatus.DISTILLATION_IN_PROGRESS
+            db_package.distillation_start_date = datetime.now()
+            session.add(db_package)
+            
+            # Commit these changes before starting potentially long-running distillation
+            await session.commit()
+            await session.refresh(job)
+            await session.refresh(db_package)
+        
+        # Distill documentation (outside transaction)
+        distiller = DocumentationDistiller()
+        distilled_path = await distiller.distill_documentation(db_package, doc_path)
+        
+        # Update job and package with distillation results
+        async with transaction() as session:
+            # Get fresh objects from database
+            result = await session.execute(select(Package).where(Package.id == package.id))
+            db_package = result.scalar_one()
+            
+            result = await session.execute(select(DistillationJob).where(DistillationJob.id == job.id))
+            db_job = result.scalar_one()
+            
+            if not distilled_path:
+                # Handle distillation failure
+                console.print(f"[red]Distillation failed for {package.name}[/red]")
+                db_package.status = PackageStatus.DISTILLATION_FAILED
                 session.add(db_package)
                 
-                result = await session.execute(
-                    select(DistillationJob).where(DistillationJob.id == job.id)
-                )
-                db_job = result.scalar_one()
-                db_job.status = DistillationJobStatus.COMPLETED
+                db_job.status = DistillationJobStatus.FAILED
+                db_job.error_message = "Distillation failed"
                 db_job.completed_at = datetime.now()
-                db_job.output_file_path = distilled_path
-                db_job.chunks_processed = db_job.num_chunks
+                db_job.chunks_processed = 0
                 session.add(db_job)
                 await session.commit()
+                return False
+            
+            # Handle distillation success
+            db_package.distilled_doc_path = distilled_path
+            db_package.status = PackageStatus.DISTILLATION_COMPLETED
+            db_package.distillation_end_date = datetime.now()
+            session.add(db_package)
+            
+            db_job.status = DistillationJobStatus.COMPLETED
+            db_job.completed_at = datetime.now()
+            db_job.output_file_path = distilled_path
+            db_job.chunks_processed = db_job.num_chunks
+            session.add(db_job)
+            await session.commit()
         
         # Calculate elapsed time
         elapsed = datetime.now() - start_time
@@ -151,7 +153,6 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
             console.print(f"[red]Failed to update error status: {db_err}[/red]")
             
         return False
-
 
 async def batch_process(package_names: List[str], max_parallel: int = 1, extract_only: bool = False) -> None:
     """

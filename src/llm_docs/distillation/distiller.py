@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import aisuite as ai
+import tiktoken
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
@@ -108,8 +109,7 @@ ok now make a part {part_num} with all the important stuff that you left out fro
         Returns:
             List of tuples with (markdown_chunk, estimated_tokens)
         """
-        # Estimate token count (rough approximation: 4 chars = 1 token)
-        estimated_tokens = len(markdown_content) / 4
+        estimated_tokens = self.estimate_tokens(markdown_content)
         
         if estimated_tokens <= self.max_chunk_tokens:
             return [(markdown_content, estimated_tokens)]
@@ -149,12 +149,12 @@ ok now make a part {part_num} with all the important stuff that you left out fro
         return [("".join(chunk), count) for chunk, count in zip(chunks, chunk_token_counts, strict=False)]
     
     async def distill_chunk(self, 
-                           package_name: str, 
-                           chunk_content: str, 
-                           part_num: int, 
-                           num_parts: int, 
-                           package_description: str = "",
-                           doc_type: str = "general") -> str:
+                        package_name: str, 
+                        chunk_content: str, 
+                        part_num: int, 
+                        num_parts: int, 
+                        package_description: str = "",
+                        doc_type: str = "general") -> str:
         """
         Distill a chunk of documentation using LLM.
         
@@ -171,7 +171,7 @@ ok now make a part {part_num} with all the important stuff that you left out fro
         """
         console.print(f"[cyan]Distilling chunk {part_num}/{num_parts} for {package_name}...[/cyan]")
         
-        # Check cache first
+        # Check cache first - with proper error handling
         cache_key = f"{package_name}_part{part_num}_of{num_parts}_{doc_type}"
         cache_key = re.sub(r'[^\w\-]', '_', cache_key)  # Sanitize for filename
         cache_file = self.cache_dir / f"{cache_key}.md"
@@ -180,10 +180,16 @@ ok now make a part {part_num} with all the important stuff that you left out fro
             try:
                 with open(cache_file, 'r', encoding='utf-8') as f:
                     cached_content = f.read()
-                    console.print(f"[green]Using cached result for chunk {part_num}[/green]")
-                    return cached_content
+                    if cached_content and len(cached_content) > 10:  # Ensure it's not an empty or corrupt file
+                        console.print(f"[green]Using cached result for chunk {part_num}[/green]")
+                        return cached_content
+                    else:
+                        console.print("[yellow]Cache file is empty or too small, regenerating...[/yellow]")
             except Exception as e:
                 console.print(f"[yellow]Error reading cache: {str(e)}[/yellow]")
+        
+        # Make sure cache directory exists
+        self.cache_dir.mkdir(exist_ok=True, parents=True)
         
         # Determine which prompt template to use
         if hasattr(self, 'get_prompt_for_chunk'):
@@ -218,55 +224,163 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                     prev_parts_count=num_parts
                 )
         
-        # Send to LLM with retry logic
+        # Send to LLM with robust retry logic
         retry_delay = self.retry_delay
+        last_error = None
         
         for attempt in range(self.max_retries):
             try:
-                # Use aisuite client instead of Anthropic directly
-                response = await self.client.chat.completions.create(
-                    model=self.model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=self.temperature,
-                    max_tokens=self.max_tokens
-                )
+                # Prepare API parameters with error handling
+                api_params = {
+                    "model": self.model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "temperature": self.temperature,
+                    "max_tokens": self.max_tokens
+                }
                 
-                # Extract the response content
-                try:
-                    response_content = response.choices[0].message.content
-                except (AttributeError, IndexError) as e:
-                    # Handle aisuite response formats
-                    console.print(f"[yellow]Error parsing response: {e}. Trying alternate format...[/yellow]")
-                    if hasattr(response, 'choices') and hasattr(response.choices[0], 'text'):
-                        response_content = response.choices[0].text
-                    elif hasattr(response, 'content'):
-                        response_content = response.content
-                    elif hasattr(response, 'text'):
-                        response_content = response.text
-                    else:
-                        raise ValueError(f"Unknown response format: {response}") from None
-    
+                # Use aisuite client with proper error handling
+                response = await self.client.chat.completions.create(**api_params)
+                
+                # Extract the response content with comprehensive fallbacks
+                response_content = self._extract_response_content(response)
+                
+                if not response_content:
+                    raise ValueError("Received empty response from LLM API")
+                
                 # Rate limit to avoid hitting API limits
                 await asyncio.sleep(1)
                 
-                # Save to cache
+                # Save to cache with error handling
                 try:
                     with open(cache_file, 'w', encoding='utf-8') as f:
                         f.write(response_content)
                 except Exception as e:
-                    console.print(f"[yellow]Error writing to cache: {str(e)}[/yellow]")
+                    console.print(f"[yellow]Warning: Failed to write to cache: {str(e)}[/yellow]")
+                    # Continue despite cache write failure
                 
                 return response_content
                 
             except Exception as e:
+                last_error = e
                 if attempt < self.max_retries - 1:
-                    console.print(f"[yellow]Error distilling chunk {part_num}: {e}. Retrying in {retry_delay}s...[/yellow]")
+                    console.print(f"[yellow]Error distilling chunk {part_num} (attempt {attempt+1}/{self.max_retries}): {e}. Retrying in {retry_delay}s...[/yellow]")
                     await asyncio.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
+                    retry_delay = min(retry_delay * 2, 60)  # Exponential backoff with a cap
                 else:
                     console.print(f"[red]Failed to distill chunk {part_num} after {self.max_retries} attempts: {e}[/red]")
-                    return f"## Error Processing Part {part_num}\n\nFailed to process this section due to API error: {str(e)}"
-    
+        
+        # If we get here, all attempts failed - provide a useful error message in markdown
+        error_message = f"""## Error Processing Part {part_num}
+
+    Failed to process this section due to API errors after {self.max_retries} attempts.
+
+    **Error:** {str(last_error)}
+
+    Please check your API credentials, network connection, or try again later.
+    """
+        return error_message
+
+    def _extract_response_content(self, response):
+        """
+        Extract content from an LLM API response with comprehensive fallbacks.
+        
+        Args:
+            response: Response object from LLM API
+            
+        Returns:
+            Text content from the response
+        """
+        # Try all possible response formats
+        try:
+            # Most common format for newer aisuite/anthropic
+            if hasattr(response, 'choices') and len(response.choices) > 0:
+                if hasattr(response.choices[0], 'message') and hasattr(response.choices[0].message, 'content'):
+                    return response.choices[0].message.content
+                elif hasattr(response.choices[0], 'text'):
+                    return response.choices[0].text
+            
+            # Alternative formats
+            if hasattr(response, 'content'):
+                return response.content
+            elif hasattr(response, 'text'):
+                return response.text
+            elif hasattr(response, 'completion'):
+                return response.completion
+            elif hasattr(response, 'answer'):
+                return response.answer
+            elif hasattr(response, 'generations') and len(response.generations) > 0:
+                if hasattr(response.generations[0], 'text'):
+                    return response.generations[0].text
+                elif hasattr(response.generations[0], 'content'):
+                    return response.generations[0].content
+            
+            # Last resort - try to convert the entire response to a string
+            if response is not None:
+                return str(response)
+            
+            # If nothing worked
+            raise ValueError(f"Unknown response format: {type(response)}")
+            
+        except Exception as e:
+            console.print(f"[red]Error extracting content from response: {e}[/red]")
+            raise
+        
+    def estimate_tokens(self, text: str) -> int:
+        """
+        Estimate the number of tokens in a text string.
+        
+        Args:
+            text: Text to estimate token count for
+            
+        Returns:
+            Estimated number of tokens
+        """
+        try:
+            
+            # Determine which encoding to use based on model
+            if "claude" in self.provider_model.lower():
+                # Claude models roughly use 4 chars per token
+                return len(text) // 4
+            elif "gpt" in self.provider_model.lower():
+                # For OpenAI models, use the appropriate encoding
+                try:
+                    if "gpt-4" in self.provider_model.lower():
+                        encoding = tiktoken.encoding_for_model("gpt-4")
+                    elif "gpt-3.5-turbo" in self.provider_model.lower():
+                        encoding = tiktoken.encoding_for_model("gpt-3.5-turbo")
+                    else:
+                        # Default to cl100k_base for newer models
+                        encoding = tiktoken.get_encoding("cl100k_base")
+                    return len(encoding.encode(text))
+                except Exception:
+                    # If specific model encoding fails, use cl100k_base
+                    try:
+                        encoding = tiktoken.get_encoding("cl100k_base")
+                        return len(encoding.encode(text))
+                    except Exception:
+                        # If that fails too, fall back to character count
+                        return len(text) // 4
+            elif "gemini" in self.provider_model.lower():
+                # Google's Gemini models, approximate to 4 chars per token
+                return len(text) // 4
+            elif "mistral" in self.provider_model.lower() or "mixtral" in self.provider_model.lower():
+                # Mistral models, approximate or use tiktoken
+                try:
+                    encoding = tiktoken.get_encoding("cl100k_base")
+                    return len(encoding.encode(text))
+                except Exception:
+                    return len(text) // 4
+            else:
+                # Default case, try cl100k_base as a reasonable approximation
+                try:
+                    encoding = tiktoken.get_encoding("cl100k_base")
+                    return len(encoding.encode(text))
+                except Exception:
+                    return len(text) // 4
+        except ImportError:
+            # If tiktoken is not available, fall back to character-based estimation
+            return len(text) // 4
+
     async def distill_documentation(self, package: Package, doc_path: str) -> Optional[str]:
         """
         Distill the full documentation for a package.
@@ -280,65 +394,84 @@ ok now make a part {part_num} with all the important stuff that you left out fro
         """
         console.print(f"[green]Distilling documentation for {package.name}...[/green]")
         
-        # Create a temporary file for intermediate results
-        temp_dir = Path(tempfile.mkdtemp(prefix="llm_docs_"))
-        temp_file = temp_dir / f"{package.name}_distillation_in_progress.md"
-        
-        try:
-            # Read the combined markdown file
-            with open(doc_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+        # Use context manager for proper cleanup of temp directory
+        with tempfile.TemporaryDirectory(prefix="llm_docs_") as temp_dir_path:
+            temp_dir = Path(temp_dir_path)
+            temp_file = temp_dir / f"{package.name}_distillation_in_progress.md"
             
-            # Try to detect the type of documentation
-            doc_type = "general"
-            content_lower = content.lower()
-            if "api reference" in content_lower or "class reference" in content_lower:
-                doc_type = "api"
-            elif "tutorial" in content_lower or "guide" in content_lower:
-                doc_type = "tutorial"
-            
-            # Determine number of chunks based on content size
-            num_chunks = 5
-            if len(content) > 800000:  # For very large docs, use more chunks
-                num_chunks = 7
-            elif len(content) < 200000:  # For smaller docs, use fewer chunks
-                num_chunks = 3
+            try:
+                # Read the combined markdown file
+                with open(doc_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
                 
-            # Split into chunks
-            chunks_with_tokens = self.split_into_chunks(content, num_chunks)
-            chunks = [chunk for chunk, _ in chunks_with_tokens]
-            
-            # Start header for the distilled content
-            combined_distilled = f"# {package.name} - Distilled LLM-Optimized Documentation\n\n"
-            combined_distilled += f"*This is a condensed, LLM-optimized version of the documentation for {package.name}.*\n\n"
-            combined_distilled += f"*Original documentation processed on: {datetime.now().strftime('%Y-%m-%d')}*\n\n"
-            combined_distilled += f"*Distilled using {self.model}*\n\n"
-            
-            # Write this initial header to the temp file
-            with open(temp_file, 'w', encoding='utf-8') as f:
-                f.write(combined_distilled)
-            
-            # Process each chunk with progress tracking
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[bold blue]{task.description}"),
-                BarColumn(),
-                TextColumn("[bold]{task.completed}/{task.total}"),
-                console=console
-            ) as progress:
-                task = progress.add_task("Distilling documentation...", total=num_chunks + 1)  # +1 for final part
+                # Try to detect the type of documentation
+                doc_type = "general"
+                content_lower = content.lower()
+                if "api reference" in content_lower or "class reference" in content_lower:
+                    doc_type = "api"
+                elif "tutorial" in content_lower or "guide" in content_lower:
+                    doc_type = "tutorial"
                 
-                for i, chunk in enumerate(chunks, 1):
-                    progress.update(task, description=f"Processing part {i}/{num_chunks}...")
+                # Determine number of chunks based on content size
+                num_chunks = 5
+                if len(content) > 800000:  # For very large docs, use more chunks
+                    num_chunks = 7
+                elif len(content) < 200000:  # For smaller docs, use fewer chunks
+                    num_chunks = 3
                     
-                    # Get package description if available
-                    package_description = f"which {package.description}" if package.description else "Python package"
+                # Split into chunks
+                chunks_with_tokens = self.split_into_chunks(content, num_chunks)
+                chunks = [chunk for chunk, _ in chunks_with_tokens]
+                
+                # Start header for the distilled content
+                combined_distilled = f"# {package.name} - Distilled LLM-Optimized Documentation\n\n"
+                combined_distilled += f"*This is a condensed, LLM-optimized version of the documentation for {package.name}.*\n\n"
+                combined_distilled += f"*Original documentation processed on: {datetime.now().strftime('%Y-%m-%d')}*\n\n"
+                combined_distilled += f"*Distilled using {self.model}*\n\n"
+                
+                # Write this initial header to the temp file
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    f.write(combined_distilled)
+                
+                # Process each chunk with progress tracking
+                with Progress(
+                    SpinnerColumn(),
+                    TextColumn("[bold blue]{task.description}"),
+                    BarColumn(),
+                    TextColumn("[bold]{task.completed}/{task.total}"),
+                    console=console
+                ) as progress:
+                    task = progress.add_task("Distilling documentation...", total=num_chunks + 1)  # +1 for final part
                     
-                    # Distill the chunk
-                    distilled_content = await self.distill_chunk(
+                    for i, chunk in enumerate(chunks, 1):
+                        progress.update(task, description=f"Processing part {i}/{num_chunks}...")
+                        
+                        # Get package description if available
+                        package_description = f"which {package.description}" if package.description else "Python package"
+                        
+                        # Distill the chunk
+                        distilled_content = await self.distill_chunk(
+                            package_name=package.name,
+                            chunk_content=chunk,
+                            part_num=i,
+                            num_parts=num_chunks,
+                            package_description=package_description,
+                            doc_type=doc_type
+                        )
+                        
+                        # Append to the temp file
+                        with open(temp_file, 'a', encoding='utf-8') as f:
+                            f.write(f"\n\n{distilled_content}")
+                        
+                        progress.update(task, completed=i)
+                    
+                    # Add a final part to capture anything missed
+                    progress.update(task, description="Processing final review part...")
+                    
+                    final_part = await self.distill_chunk(
                         package_name=package.name,
-                        chunk_content=chunk,
-                        part_num=i,
+                        chunk_content="",
+                        part_num=num_chunks + 1,
                         num_parts=num_chunks,
                         package_description=package_description,
                         doc_type=doc_type
@@ -346,54 +479,28 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                     
                     # Append to the temp file
                     with open(temp_file, 'a', encoding='utf-8') as f:
-                        f.write(f"\n\n{distilled_content}")
+                        f.write(f"\n\n{final_part}")
                     
-                    progress.update(task, completed=i)
+                    progress.update(task, completed=num_chunks + 1)
                 
-                # Add a final part to capture anything missed
-                progress.update(task, description="Processing final review part...")
+                # Read the complete file
+                with open(temp_file, 'r', encoding='utf-8') as f:
+                    combined_distilled = f.read()
                 
-                final_part = await self.distill_chunk(
-                    package_name=package.name,
-                    chunk_content="",
-                    part_num=num_chunks + 1,
-                    num_parts=num_chunks,
-                    package_description=package_description,
-                    doc_type=doc_type
-                )
+                # Save the distilled documentation
+                output_filename = f"{package.name}__distilled_lllm_documentation__as_of_{datetime.now().strftime('%m_%d_%Y')}.md"
+                output_path = self.output_dir / output_filename
                 
-                # Append to the temp file
-                with open(temp_file, 'a', encoding='utf-8') as f:
-                    f.write(f"\n\n{final_part}")
+                # Ensure the output directory exists
+                self.output_dir.mkdir(exist_ok=True, parents=True)
                 
-                progress.update(task, completed=num_chunks + 1)
-            
-            # Read the complete file
-            with open(temp_file, 'r', encoding='utf-8') as f:
-                combined_distilled = f.read()
-            
-            # Save the distilled documentation
-            output_filename = f"{package.name}__distilled_lllm_documentation__as_of_{datetime.now().strftime('%m_%d_%Y')}.md"
-            output_path = self.output_dir / output_filename
-            
-            with open(output_path, 'w', encoding='utf-8') as f:
-                f.write(combined_distilled)
-            
-            console.print(f"[green]Distillation complete! Output saved to {output_path}[/green]")
-            return str(output_path)
-            
-        except Exception as e:
-            console.print(f"[red]Error distilling documentation: {str(e)}[/red]")
-            return None
-        finally:
-            # Clean up temporary files
-            if temp_file.exists():
-                try:
-                    temp_file.unlink()
-                except OSError as e:
-                    console.print(f"[yellow]Failed to delete temporary file: {e}[/yellow]")
+                with open(output_path, 'w', encoding='utf-8') as f:
+                    f.write(combined_distilled)
                 
-            try:
-                temp_dir.rmdir()
-            except OSError as e:
-                console.print(f"[yellow]Failed to delete temporary directory: {e}[/yellow]")
+                console.print(f"[green]Distillation complete! Output saved to {output_path}[/green]")
+                return str(output_path)
+                
+            except Exception as e:
+                console.print(f"[red]Error distilling documentation: {str(e)}[/red]")
+                return None
+            # No need for explicit cleanup in finally block - the tempfile.TemporaryDirectory context manager handles it

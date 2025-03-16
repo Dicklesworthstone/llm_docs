@@ -33,39 +33,15 @@ class RateLimiter:
         self.lock = threading.Lock()
         
     def is_rate_limited(self, key: str) -> bool:
-        """
-        Check if a key is rate limited.
-        
-        Args:
-            key: Identifier for the client (e.g. IP address)
-            
-        Returns:
-            True if rate limited, False otherwise
-        """
         now = time.time()
-        
         with self.lock:
-            # Initialize if key not seen before
             if key not in self.requests:
-                self.requests[key] = {now: 1}
-                return False
-            
-        # Clean up old entries
-        self.requests[key] = {
-            ts: count for ts, count in self.requests[key].items()
-            if now - ts < self.window_seconds
-        }
-        
-        # Count recent requests
-        recent_count = sum(self.requests[key].values())
-        
-        # Add current request
-        if now in self.requests[key]:
-            self.requests[key][now] += 1
-        else:
-            self.requests[key][now] = 1
-            
-        return recent_count >= self.rate_limit
+                self.requests[key] = []
+            # Remove timestamps older than window_seconds
+            self.requests[key] = [t for t in self.requests[key] if now - t < self.window_seconds]
+            self.requests[key].append(now)
+            return len(self.requests[key]) > self.rate_limit
+
 
 
 # Create rate limiter instance

@@ -302,7 +302,11 @@ class PackageDiscovery:
         """
         
         top_packages_data = await self.get_top_packages_from_pypi(limit)
-        top_packages = [p["name"] for p in top_packages_data]
+        top_packages = [
+            p["name"] if isinstance(p, dict) and "name" in p else p 
+            for p in top_packages_data
+        ]
+
         
         stored_packages = []
         

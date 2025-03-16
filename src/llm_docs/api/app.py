@@ -31,7 +31,7 @@ console = Console()
 
 # FastAPI models for requests and responses
 class PackageCreate(BaseModel):
-    name: str
+    name: str = Field(..., regex=r'^[a-z0-9\-_]+$')
     priority: Optional[int] = Field(None, ge=0)  # Must be non-negative
     description: Optional[str] = None
 
@@ -378,10 +378,7 @@ async def trigger_package_processing(
         raise HTTPException(status_code=404, detail="Package not found")
         
     # Check if already processing
-    if package.status in [
-        PackageStatus.DISTILLATION_IN_PROGRESS,
-        PackageStatus.DISTILLATION_PENDING
-    ]:
+    if package.status == PackageStatus.DISTILLATION_IN_PROGRESS:
         raise HTTPException(
             status_code=400,
             detail=f"Package '{package.name}' is already being processed"
@@ -416,19 +413,42 @@ async def get_original_documentation(
             status_code=404,
             detail=f"No original documentation available for package '{package.name}'"
         )
+    
+    # Sanitize the path to prevent directory traversal attacks
+    doc_path = Path(package.original_doc_path)
+    docs_dir = Path("docs").resolve()
+    
+    try:
+        # Resolve to absolute paths
+        if not doc_path.is_absolute():
+            doc_path = docs_dir / doc_path.name
         
-    if not os.path.exists(package.original_doc_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Documentation file not found for package '{package.name}'"
+        doc_path = doc_path.resolve()
+        
+        # Check if file exists and is within allowed directory
+        if not doc_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Documentation file not found for package '{package.name}'"
+            )
+            
+        if not str(doc_path).startswith(str(docs_dir)) and not str(doc_path.parent).startswith(str(Path.cwd())):
+            raise HTTPException(
+                status_code=403,
+                detail="Access to this file is not allowed"
+            )
+        
+        return FileResponse(
+            str(doc_path),
+            media_type="text/markdown",
+            filename=f"{package.name}_original_docs.md"
         )
-        
-    return FileResponse(
-        package.original_doc_path,
-        media_type="text/markdown",
-        filename=f"{package.name}_original_docs.md"
-    )
-
+    except (ValueError, OSError) as e:
+        # Handle path resolution errors
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Documentation file error: {str(e)}"
+        ) from e
 
 @app.get("/packages/{package_id}/distilled")
 async def get_distilled_documentation(
@@ -447,18 +467,42 @@ async def get_distilled_documentation(
             status_code=404,
             detail=f"No distilled documentation available for package '{package.name}'"
         )
+    
+    # Sanitize the path to prevent directory traversal attacks
+    doc_path = Path(package.distilled_doc_path)
+    distilled_docs_dir = Path("distilled_docs").resolve()
+    
+    try:
+        # Resolve to absolute paths
+        if not doc_path.is_absolute():
+            doc_path = distilled_docs_dir / doc_path.name
         
-    if not os.path.exists(package.distilled_doc_path):
-        raise HTTPException(
-            status_code=404,
-            detail=f"Distilled documentation file not found for package '{package.name}'"
+        doc_path = doc_path.resolve()
+        
+        # Check if file exists and is within allowed directory
+        if not doc_path.exists():
+            raise HTTPException(
+                status_code=404,
+                detail=f"Distilled documentation file not found for package '{package.name}'"
+            )
+            
+        if not str(doc_path).startswith(str(distilled_docs_dir)) and not str(doc_path.parent).startswith(str(Path.cwd())):
+            raise HTTPException(
+                status_code=403,
+                detail="Access to this file is not allowed"
+            )
+        
+        return FileResponse(
+            str(doc_path),
+            media_type="text/markdown",
+            filename=f"{package.name}_distilled_docs.md"
         )
-        
-    return FileResponse(
-        package.distilled_doc_path,
-        media_type="text/markdown",
-        filename=f"{package.name}_distilled_docs.md"
-    )
+    except (ValueError, OSError) as e:
+        # Handle path resolution errors
+        raise HTTPException(
+            status_code=404, 
+            detail=f"Documentation file error: {str(e)}"
+        ) from e
 
 
 @app.get("/jobs", response_model=List[DistillationJobResponse])

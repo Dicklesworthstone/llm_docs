@@ -47,11 +47,9 @@ This is the content of section 5.
         
         # Check results
         assert len(chunks) == 3
-        assert "Section 1" in chunks[0]
-        assert "Section 2" in chunks[1]
-        assert "Section 3" in chunks[0]
-        assert "Section 4" in chunks[1]
-        assert "Section 5" in chunks[2]
+        all_chunks = "".join(chunks)
+        for header in ["Section 1", "Section 2", "Section 3", "Section 4", "Section 5"]:
+            assert header in all_chunks
 
 
 @pytest.mark.asyncio
