@@ -21,7 +21,7 @@ from llm_docs.package_discovery import PackageDiscovery
 from llm_docs.storage.database import init_db, reset_db, transaction
 from llm_docs.storage.models import DistillationJob, DistillationJobStatus, Package, PackageStatus
 
-db_path = config.database.url.replace("sqlite:///", "")
+db_path = config.database.url.replace("sqlite+aiosqlite:///", "")
 
 # Create Typer app
 app = typer.Typer(
@@ -74,13 +74,37 @@ def discover(
         "--process",
         "-p",
         help="Number of top packages to process immediately"
+    ),
+    concurrency: int = typer.Option(
+        5,
+        "--concurrency",
+        "-c",
+        help="Maximum number of concurrent API calls"
+    ),
+    no_retry: bool = typer.Option(
+        False,
+        "--no-retry",
+        help="Disable retry for failed stats retrievals"
+    ),
+    rate_limit: float = typer.Option(
+        0.5,
+        "--rate-limit",
+        help="Maximum rate for API requests (requests per second)"
+    ),
+    process_concurrency: int = typer.Option(
+        2,
+        "--process-concurrency",
+        help="Maximum number of packages to process concurrently"
     )
 ):
-    """Discover packages from PyPI."""
+    """Discover packages from PyPI with improved rate limiting."""
     async def run():
         async with transaction() as session:
-            # Initialize the package discovery
+            # Initialize the package discovery with custom rate limiter
             discovery = PackageDiscovery(session)
+            
+            # Adjust rate limiter based on parameters
+            discovery.stats_rate_limiter.rate = rate_limit
             
             with Progress(
                 SpinnerColumn(),
@@ -91,7 +115,11 @@ def discover(
             ) as progress:
                 task = progress.add_task("Discovering packages...", total=limit)
                 
-                packages = await discovery.discover_and_store_packages(limit)
+                packages = await discovery.discover_and_store_packages(
+                    limit=limit,
+                    concurrency=concurrency,
+                    retry_failed=not no_retry
+                )
                 progress.update(task, completed=len(packages))
                 
                 if process_top > 0:
@@ -102,35 +130,49 @@ def discover(
                         total=len(top_packages)
                     )
                     
-                    for i, package in enumerate(top_packages):
-                        progress.update(process_task, description=f"Processing {package.name}...")
-                        
-                        # Extract documentation
-                        extractor = DocumentationExtractor()
-                        doc_path = await extractor.process_package_documentation(package)
-                        
-                        if doc_path:
-                            # Update package
-                            package.original_doc_path = doc_path
-                            package.docs_extraction_date = datetime.now()
-                            package.status = PackageStatus.DOCS_EXTRACTED
-                            session.add(package)
-                            await session.commit()
+                    # Use semaphore to limit concurrent processing
+                    semaphore = asyncio.Semaphore(process_concurrency)
+                    
+                    async def process_with_semaphore(pkg, idx):
+                        async with semaphore:
+                            progress.update(process_task, description=f"Processing {pkg.name} ({idx+1}/{len(top_packages)})...")
                             
-                            # Create distillation job
-                            job = DistillationJob(
-                                package_id=package.id,
-                                status="pending",
-                                input_file_path=doc_path
-                            )
-                            session.add(job)
-                            await session.commit()
-                        
-                        progress.update(process_task, completed=i+1)
+                            # Extract documentation
+                            extractor = DocumentationExtractor()
+                            doc_path = await extractor.process_package_documentation(pkg)
+                            
+                            if doc_path:
+                                # Update package
+                                pkg.original_doc_path = doc_path
+                                pkg.docs_extraction_date = datetime.now()
+                                pkg.status = PackageStatus.DOCS_EXTRACTED
+                                session.add(pkg)
+                                await session.commit()
+                                
+                                # Create distillation job
+                                job = DistillationJob(
+                                    package_id=pkg.id,
+                                    status="pending",
+                                    input_file_path=doc_path
+                                )
+                                session.add(job)
+                                await session.commit()
+                            
+                            progress.update(process_task, advance=1)
+                    
+                    # Process top packages concurrently
+                    tasks = [process_with_semaphore(pkg, i) for i, pkg in enumerate(top_packages)]
+                    await asyncio.gather(*tasks)
                 
                 await discovery.close()
                 
-        console.print(f"[green]Discovered {limit} packages.[/green]")
+        # Show summary after completion
+        if discovery.failed_stats_packages:
+            console.print(f"[yellow]Note: Failed to get stats for {len(discovery.failed_stats_packages)} packages.[/yellow]")
+            if len(discovery.failed_stats_packages) <= 10:
+                console.print(f"[yellow]Failed packages: {', '.join(discovery.failed_stats_packages)}[/yellow]")
+                
+        console.print(f"[green]Discovered {len(packages)} packages successfully.[/green]")
         if process_top > 0:
             console.print(f"[green]Processed top {min(process_top, len(packages))} packages.[/green]")
     

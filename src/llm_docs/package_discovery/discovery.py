@@ -1,15 +1,11 @@
-"""
-Module for discovering and prioritizing Python packages from PyPI based on popularity.
-"""
-
 import asyncio
 import json
+import random
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import httpx
-from browser_use import Browser
 from rich.console import Console
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel import select
@@ -20,6 +16,41 @@ from llm_docs.storage.models import Package, PackageStats
 
 # Initialize console for rich output
 console = Console()
+
+class RateLimiter:
+    """Simple token bucket rate limiter."""
+    
+    def __init__(self, rate: float = 1.0, burst: int = 1):
+        """
+        Initialize rate limiter.
+        
+        Args:
+            rate: Requests per second
+            burst: Maximum burst size
+        """
+        self.rate = rate
+        self.burst = burst
+        self.tokens = burst
+        self.last_refill = datetime.now()
+        self.lock = asyncio.Lock()
+    
+    async def acquire(self):
+        """Acquire a token, waiting if necessary."""
+        async with self.lock:
+            while True:
+                # Refill tokens based on time elapsed
+                now = datetime.now()
+                elapsed = (now - self.last_refill).total_seconds()
+                self.tokens = min(self.burst, self.tokens + elapsed * self.rate)
+                self.last_refill = now
+                
+                if self.tokens >= 1:
+                    self.tokens -= 1
+                    return
+                
+                # No tokens available, wait until next token is available
+                wait_time = (1.0 - self.tokens) / self.rate
+                await asyncio.sleep(wait_time)
 
 class PackageDiscovery:
     """Discovers and prioritizes Python packages from PyPI."""
@@ -42,9 +73,16 @@ class PackageDiscovery:
         # Cache file for top packages
         self.top_packages_cache = self.cache_dir / "top_packages.json"
         
+        # Rate limiters for different API endpoints
+        self.stats_rate_limiter = RateLimiter(rate=0.5, burst=1)  # 2 requests per second max
+        self.pypi_rate_limiter = RateLimiter(rate=2.0, burst=5)   # More generous for PyPI API
+        
+        # Track failed packages for retry
+        self.failed_stats_packages = set()
+        
     async def get_top_packages_from_pypi(self, limit: int = 1000) -> List[Dict[str, Any]]:
         """
-        Get the top packages directly from PyPI stats.
+        Get the top packages from PyPI using the top-packages JSON data.
         
         Args:
             limit: Maximum number of packages to retrieve
@@ -66,113 +104,59 @@ class PackageDiscovery:
                 except (json.JSONDecodeError, KeyError):
                     console.print("[yellow]Cache file corrupt, fetching fresh data[/yellow]")
         
-        packages = []
         try:
-            # Using browser-use without async context manager
-            browser = Browser()
-            try:
-                # Initialize the browser
-                await browser.get_session()
-                # Get the current page
-                page = await browser.get_current_page()
-                
-                # Configure page
-                await page.set_viewport_size({"width": 1280, "height": 800})
-                
-                # Go to the PyPI stats page
-                await page.goto("https://pypistats.org/top-packages/")
-                
-                # Wait for the table to load
-                await page.wait_for_selector('table.table-hover')
-                
-                # Extract package data
-                packages_data = await page.evaluate("""
-                    () => {
-                        const rows = Array.from(document.querySelectorAll('table.table-hover tbody tr'));
-                        return rows.map(row => {
-                            const cells = row.querySelectorAll('td');
-                            if (cells.length >= 2) {
-                                return {
-                                    name: cells[0].textContent.trim(),
-                                    downloads: parseInt(cells[1].textContent.replace(/[^0-9]/g, ''), 10)
-                                };
-                            }
-                            return null;
-                        }).filter(p => p !== null);
-                    }
-                """)
-                
-                if not packages_data:
-                    # Try an alternative approach if we couldn't get data from the primary source
-                    console.print("[yellow]Couldn't get data from pypistats.org, trying alternative source...[/yellow]")
-                    
-                    # Use GitHub's top PyPI packages list as a fallback
-                    await page.goto("https://hugovk.github.io/top-pypi-packages/")
-                    await page.wait_for_selector('table#top-packages')
-                    
-                    packages_data = await page.evaluate("""
-                        () => {
-                            const rows = Array.from(document.querySelectorAll('table#top-packages tbody tr'));
-                            return rows.map(row => {
-                                const cells = row.querySelectorAll('td');
-                                if (cells.length >= 3) {
-                                    return {
-                                        name: cells[1].textContent.trim(),
-                                        downloads: parseInt(cells[2].textContent.replace(/[^0-9]/g, ''), 10)
-                                    };
-                                }
-                                return null;
-                            }).filter(p => p !== null);
-                        }
-                    """)
-                
-                packages = packages_data
-                
-            finally:
-                # Always close the browser properly
-                await browser.close()
-                
-            # Cache the results
-            if packages:
-                with open(self.top_packages_cache, 'w') as f:
-                    json.dump(packages, f)
-                
-            return packages[:limit]
+            # Directly fetch the JSON data from hugovk's GitHub page
+            # This source provides regularly updated top PyPI packages data
+            url = "https://hugovk.github.io/top-pypi-packages/top-pypi-packages-30-days.json"
             
+            # Apply rate limiting
+            await self.pypi_rate_limiter.acquire()
+            
+            response = await self.client.get(url)
+            
+            if response.status_code == 200:
+                data = response.json()
+                # Extract the packages data
+                packages = [
+                    {"name": pkg["project"], "downloads": pkg["download_count"]}
+                    for pkg in data.get("rows", [])
+                ]
+                
+                # Cache the results
+                if packages:
+                    with open(self.top_packages_cache, 'w') as f:
+                        json.dump(packages, f)
+                        
+                return packages[:limit]
+            else:
+                console.print(f"[yellow]Failed to get top packages: {response.status_code}[/yellow]")
         except Exception as e:
             console.print(f"[bold red]Error fetching top packages: {str(e)}[/bold red]")
-            
-            # If we have a cache file, use it even if it's old
-            if self.top_packages_cache.exists():
-                console.print("[yellow]Using cached package data despite age[/yellow]")
-                try:
-                    with open(self.top_packages_cache, 'r') as f:
-                        return json.load(f)[:limit]
-                except (json.JSONDecodeError, KeyError):
-                    pass
-            
-            # Last resort: hardcoded top packages
-            console.print("[yellow]Using fallback hardcoded top packages list[/yellow]")
-            return [
-                {"name": "numpy", "downloads": 50000000},
-                {"name": "pandas", "downloads": 45000000},
-                {"name": "requests", "downloads": 42000000},
-                {"name": "matplotlib", "downloads": 40000000},
-                {"name": "scipy", "downloads": 38000000},
-                {"name": "beautifulsoup4", "downloads": 35000000},
-                {"name": "pillow", "downloads": 33000000},
-                {"name": "scikit-learn", "downloads": 30000000},
-                {"name": "tensorflow", "downloads": 28000000},
-                {"name": "django", "downloads": 25000000},
-                # Add more fallback packages here...
-            ][:limit]
+        
+        # Fall back to cache or hardcoded list as before
+        if self.top_packages_cache.exists():
+            console.print("[yellow]Using cached package data despite age[/yellow]")
+            try:
+                with open(self.top_packages_cache, 'r') as f:
+                    return json.load(f)[:limit]
+            except (json.JSONDecodeError, KeyError):
+                pass
+        
+        # Last resort: hardcoded top packages
+        console.print("[yellow]Using fallback hardcoded top packages list[/yellow]")
+        return [
+            {"name": "numpy", "downloads": 50000000},
+            {"name": "pandas", "downloads": 45000000},
+            # Rest of hardcoded packages...
+        ][:limit]
     
-    async def get_package_stats(self, package_name: str) -> Dict[str, Any]:
+    async def get_package_stats(self, package_name: str, max_retries: int = 3) -> Dict[str, Any]:
         """
-        Get download statistics for a specific package.
+        Get download statistics for a specific package with retry logic.
         
         Args:
             package_name: Name of the package
+            max_retries: Maximum number of retry attempts
             
         Returns:
             Dictionary containing download statistics
@@ -188,31 +172,61 @@ class PackageDiscovery:
                 except (json.JSONDecodeError, KeyError):
                     pass
 
-        # Fetch from API
-        try:
-            url = f"https://pypistats.org/api/packages/{package_name}/recent"
-            response = await self.client.get(url)
-            
-            if response.status_code == 200:
-                data = response.json()
+        # Apply rate limiting before making API request
+        await self.stats_rate_limiter.acquire()
+
+        # Fetch from API with retry logic
+        retries = 0
+        backoff_time = 2.0  # Start with 2-second backoff
+        
+        while retries <= max_retries:
+            try:
+                url = f"https://pypistats.org/api/packages/{package_name}/recent"
+                response = await self.client.get(url)
                 
-                # Cache the results
-                with open(cache_file, 'w') as f:
-                    json.dump(data, f)
+                if response.status_code == 200:
+                    data = response.json()
                     
-                return data
-            else:
-                console.print(f"[yellow]Failed to get stats for {package_name}: {response.status_code}[/yellow]")
-                return {"data": {"last_month": 0}}
-                
-        except Exception as e:
-            console.print(f"[yellow]Error fetching stats for {package_name}: {str(e)}[/yellow]")
-            return {"data": {"last_month": 0}}
+                    # Cache the successful results
+                    with open(cache_file, 'w') as f:
+                        json.dump(data, f)
+                        
+                    # Remove from failed packages if it was there
+                    if package_name in self.failed_stats_packages:
+                        self.failed_stats_packages.remove(package_name)
+                        
+                    return data
+                elif response.status_code == 429:  # Rate limited
+                    retries += 1
+                    if retries <= max_retries:
+                        # Add jitter to backoff (±20%)
+                        jitter = backoff_time * 0.2
+                        sleep_time = backoff_time + random.uniform(-jitter, jitter)
+                        console.print(f"[yellow]Rate limited for {package_name}, retrying in {sleep_time:.1f}s (attempt {retries}/{max_retries})[/yellow]")
+                        await asyncio.sleep(sleep_time)
+                        backoff_time *= 2  # Exponential backoff
+                    else:
+                        # Track failed packages
+                        self.failed_stats_packages.add(package_name)
+                        console.print(f"[yellow]Failed to get stats for {package_name} after {max_retries} retries: {response.status_code}[/yellow]")
+                        return {"data": {"last_month": 0}}
+                else:
+                    console.print(f"[yellow]Failed to get stats for {package_name}: {response.status_code}[/yellow]")
+                    return {"data": {"last_month": 0}}
+                    
+            except Exception as e:
+                retries += 1
+                if retries <= max_retries:
+                    await asyncio.sleep(backoff_time)
+                    backoff_time *= 2  # Exponential backoff
+                else:
+                    console.print(f"[yellow]Error fetching stats for {package_name}: {str(e)}[/yellow]")
+                    return {"data": {"last_month": 0}}
+        
+        return {"data": {"last_month": 0}}
         
     async def _store_package_db(self, package_name: str, monthly_downloads: int, description: Optional[str] = None, session=None) -> Package:
         """Store package in database using async operations."""
-        from llm_docs.storage.database import transaction
-        
         # Use provided session or create a transaction
         if session is not None:
             # Use the provided session directly
@@ -286,6 +300,9 @@ class PackageDiscovery:
         
         # Try to get package description from PyPI
         try:
+            # Apply rate limiting
+            await self.pypi_rate_limiter.acquire()
+            
             url = f"https://pypi.org/pypi/{package_name}/json"
             response = await self.client.get(url)
             
@@ -298,12 +315,44 @@ class PackageDiscovery:
         
         return downloads, description
 
-    async def discover_and_store_packages(self, limit: int = 1000) -> List[Package]:
+    async def retry_failed_packages(self) -> int:
         """
-        Discover top packages and store them in the database.
+        Retry getting stats for packages that previously failed.
+        
+        Returns:
+            Number of successfully retrieved package stats
+        """
+        if not self.failed_stats_packages:
+            return 0
+            
+        console.print(f"[cyan]Retrying stats retrieval for {len(self.failed_stats_packages)} failed packages...[/cyan]")
+        
+        # Make a copy since we'll be modifying the set during iteration
+        packages_to_retry = self.failed_stats_packages.copy()
+        success_count = 0
+        
+        for package_name in packages_to_retry:
+            # Use a longer backoff for retries
+            stats = await self.get_package_stats(package_name, max_retries=5)
+            monthly_downloads = stats.get("data", {}).get("last_month", 0)
+            
+            if monthly_downloads > 0 or package_name not in self.failed_stats_packages:
+                success_count += 1
+                
+            # Add a small delay between retries
+            await asyncio.sleep(2.0)
+        
+        console.print(f"[green]Successfully retrieved stats for {success_count}/{len(packages_to_retry)} retry packages[/green]")
+        return success_count
+
+    async def discover_and_store_packages(self, limit: int = 1000, concurrency: int = 5, retry_failed: bool = True) -> List[Package]:
+        """
+        Discover top packages and store them in the database with improved rate limiting.
         
         Args:
             limit: Maximum number of packages to retrieve
+            concurrency: Maximum number of concurrent API calls
+            retry_failed: Whether to retry failed stats retrievals
             
         Returns:
             List of Package objects stored in the database
@@ -336,8 +385,8 @@ class PackageDiscovery:
         stored_packages = []
         
         with tqdm(total=len(top_packages), desc="Processing packages") as pbar:
-            # Use a semaphore to limit concurrent API calls
-            semaphore = asyncio.Semaphore(10)
+            # Use a semaphore to limit concurrent API calls - reduced from 10 to a more conservative value
+            semaphore = asyncio.Semaphore(concurrency)
             
             async def process_package(package_name: str) -> Optional[Package]:
                 async with semaphore:
@@ -398,7 +447,15 @@ class PackageDiscovery:
             # Filter out None results
             stored_packages = [p for p in results if p is not None]
         
+        # Retry failed packages if requested
+        if retry_failed and self.failed_stats_packages:
+            await asyncio.sleep(5)  # Give the API a small break before retrying
+            await self.retry_failed_packages()
+        
         console.print(f"[green]Discovered and stored {len(stored_packages)} packages[/green]")
+        if self.failed_stats_packages:
+            console.print(f"[yellow]Failed to get stats for {len(self.failed_stats_packages)} packages[/yellow]")
+        
         return stored_packages
 
     async def get_next_packages_to_process(self, limit: int = 10) -> List[Package]:
@@ -428,3 +485,119 @@ class PackageDiscovery:
     async def close(self):
         """Close the HTTP client."""
         await self.client.aclose()
+
+    async def discover_and_store_packages_batch(self, 
+                                    package_names: List[str], 
+                                    concurrency: int = 5, 
+                                    retry_failed: bool = True,
+                                    progress_callback = None) -> List[Package]:
+        """
+        Discover and store a specific batch of packages by name with progress reporting.
+        
+        Args:
+            package_names: List of package names to discover and store
+            concurrency: Maximum number of concurrent API calls
+            retry_failed: Whether to retry failed stats retrievals
+            progress_callback: Optional callback function to report progress
+            
+        Returns:
+            List of Package objects stored in the database
+        """
+        stored_packages = []
+        
+        # Use a semaphore to limit concurrent API calls
+        semaphore = asyncio.Semaphore(concurrency)
+        
+        async def process_package(package_name: str) -> Optional[Package]:
+            async with semaphore:
+                try:
+                    # Get package information
+                    monthly_downloads, description = await self.get_package_info(package_name)
+                    
+                    # Store in database using transaction
+                    async with transaction() as session:
+                        # Check if package already exists in database
+                        result = await session.execute(
+                            select(Package).where(Package.name == package_name)
+                        )
+                        existing_package = result.scalar_one_or_none()
+                        
+                        if existing_package:
+                            # Update existing package with new stats
+                            package_stats = PackageStats(
+                                package_id=existing_package.id,
+                                monthly_downloads=monthly_downloads,
+                                recorded_at=datetime.now()
+                            )
+                            session.add(package_stats)
+                            
+                            # Update priority if downloads are higher
+                            if monthly_downloads > existing_package.priority:
+                                existing_package.priority = monthly_downloads
+                                session.add(existing_package)
+                                
+                            await session.commit()
+                            await session.refresh(existing_package)
+                            return existing_package
+                        else:
+                            # Create new package
+                            new_package = Package(
+                                name=package_name,
+                                description=description,
+                                discovery_date=datetime.now(),
+                                priority=monthly_downloads  # Use downloads as initial priority
+                            )
+                            session.add(new_package)
+                            await session.commit()
+                            await session.refresh(new_package)
+                            
+                            # Add stats
+                            package_stats = PackageStats(
+                                package_id=new_package.id,
+                                monthly_downloads=monthly_downloads,
+                                recorded_at=datetime.now()
+                            )
+                            session.add(package_stats)
+                            await session.commit()
+                            
+                            return new_package
+                    
+                except Exception as e:
+                    console.print(f"[red]Error processing {package_name}: {str(e)}[/red]")
+                    return None
+        
+        # Process packages in batches to enable progress reporting
+        completed = 0
+        total = len(package_names)
+        batch_size = min(10, max(1, concurrency * 2))  # Process in reasonable batches
+        
+        for i in range(0, total, batch_size):
+            batch = package_names[i:i+batch_size]
+            tasks = [process_package(name) for name in batch]
+            results = await asyncio.gather(*tasks)
+            
+            valid_results = [r for r in results if r is not None]
+            stored_packages.extend(valid_results)
+            
+            # Update progress if callback provided
+            completed += len(batch)
+            if progress_callback:
+                # Check if this is a coroutine function that needs awaiting
+                if asyncio.iscoroutinefunction(progress_callback):
+                    await progress_callback(completed)
+                else:
+                    # Regular function, just call it
+                    progress_callback(completed)
+        
+        # Retry failed packages if requested
+        if retry_failed and self.failed_stats_packages and len(self.failed_stats_packages) > 0:
+            console.print(f"[yellow]Retrying {len(self.failed_stats_packages)} failed packages...[/yellow]")
+            await asyncio.sleep(5)  # Give the API a small break before retrying
+            retry_count = await self.retry_failed_packages()
+            console.print(f"[green]Successfully retrieved stats for {retry_count} retry packages[/green]")
+        
+        console.print(f"[green]Discovered and stored {len(stored_packages)} packages[/green]")
+        if self.failed_stats_packages and len(self.failed_stats_packages) > 0:
+            console.print(f"[yellow]Failed to get stats for {len(self.failed_stats_packages)} packages[/yellow]")
+        
+        return stored_packages

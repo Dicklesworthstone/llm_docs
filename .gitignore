@@ -178,6 +178,7 @@ emoji_cache.json
 
 # Project specific
 llm_docs.db
+
 cache/
 docs/*.md
 distilled_docs/*.md
@@ -192,3 +193,5 @@ distilled_docs/*.md
 
 # macOS specific files
 .DS_Store
+llm_docs.db-shm
+llm_docs.db-wal
