@@ -20,6 +20,10 @@ from llm_docs.storage.models import Package
 # Initialize console
 console = Console()
 
+class LLMAPIError(Exception):
+    """Exception raised when LLM API calls fail after retries."""
+    pass
+
 class DocumentationDistiller:
     """Distills documentation using LLMs via aisuite."""
     
@@ -267,8 +271,10 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                     await asyncio.sleep(retry_delay)
                     retry_delay = min(retry_delay * 2, 60)  # Exponential backoff with a cap
                 else:
-                    console.print(f"[red]Failed to distill chunk {part_num} after {self.max_retries} attempts: {e}[/red]")
-        
+                    error_msg = f"Failed to distill chunk {part_num} after {self.max_retries} attempts: {str(last_error)}"
+                    console.print(f"[red]{error_msg}[/red]")                    
+                    raise LLMAPIError(error_msg) from last_error
+                
         # If we get here, all attempts failed - provide a useful error message in markdown
         error_message = f"""## Error Processing Part {part_num}
 

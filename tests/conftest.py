@@ -43,10 +43,10 @@ def client_fixture(async_engine):
     from llm_docs.api.app import app
     from llm_docs.storage.database import get_async_session
     
-    def get_test_session():
-        with AsyncSession(async_engine) as session:
+    async def get_test_session():
+        async with AsyncSession(async_engine) as session:
             yield session
-    
+
     # Override the dependency
     app.dependency_overrides[get_async_session] = get_test_session
     

@@ -13,6 +13,10 @@ from llm_docs.distillation import DocumentationDistiller
 from llm_docs.storage.models import Package
 
 
+class LLMAPIError(Exception):
+    """Exception raised when LLM API calls fail after retries."""
+    pass
+
 @pytest.mark.asyncio
 async def test_split_into_chunks():
     """Test splitting markdown content into chunks."""
@@ -163,3 +167,35 @@ async def test_distill_chunk_retry_on_error():
             
             # Check that the API was called twice
             assert mock_create.call_count == 2
+
+@pytest.mark.asyncio
+async def test_distill_chunk_all_retries_fail():
+    """Test behavior when all API retry attempts fail."""
+    with patch('aisuite.Client.chat.completions.create') as mock_create, \
+         tempfile.TemporaryDirectory() as temp_dir:
+        
+        # Mock API to always fail
+        mock_create.side_effect = Exception("API Error")
+        
+        # Create distiller with minimal retry settings for test
+        distiller = DocumentationDistiller(
+            output_dir=temp_dir,
+            retry_delay=0.1,
+            max_retries=2
+        )
+        
+        # Verify it raises the expected exception
+        with pytest.raises(LLMAPIError) as excinfo:
+            await distiller.distill_chunk(
+                package_name="test-package",
+                chunk_content="Test content",
+                part_num=1,
+                num_parts=3
+            )
+        
+        # Check the error message
+        assert "Failed to distill chunk" in str(excinfo.value)
+        assert "API Error" in str(excinfo.value)
+        
+        # Verify the mock was called the expected number of times (equal to max_retries)
+        assert mock_create.call_count == 2            

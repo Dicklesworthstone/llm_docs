@@ -12,7 +12,7 @@ echo
 # Check if database exists, initialize if not
 if [ ! -f "llm_docs.db" ]; then
   echo -e "${YELLOW}Database not found. Initializing...${NC}"
-  python -m llm_docs db init
+  python -m llm_docs init
 fi
 
 # Menu

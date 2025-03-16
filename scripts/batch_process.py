@@ -14,6 +14,7 @@ from typing import List
 # Add the src directory to the Python path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+import redis.asyncio as redis
 from rich.console import Console
 from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from sqlalchemy.future import select
@@ -30,7 +31,6 @@ db_path = config.database.url.replace("sqlite+aiosqlite:///", "")
 # Create rich console
 console = Console()
 
-
 async def process_package(package: Package, extract_only: bool = False) -> bool:
     """
     Process a package.
@@ -42,6 +42,18 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
     Returns:
         True if processing was successful, False otherwise
     """
+    # Create lock key for this package
+    lock_key = f"processing:package:{package.id}"
+    
+    # Try to acquire lock using Redis
+    redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+    redis_client = redis.from_url(redis_url, decode_responses=True)
+    lock_acquired = await redis_client.set(lock_key, "1", nx=True, ex=3600)  # 1 hour timeout
+    
+    if not lock_acquired:
+        console.print(f"[yellow]Package {package.name} is already being processed by another worker[/yellow]")
+        return False
+    
     try:
         console.print(f"[cyan]Processing {package.name}...[/cyan]")
         start_time = datetime.now()
@@ -153,6 +165,9 @@ async def process_package(package: Package, extract_only: bool = False) -> bool:
             console.print(f"[red]Failed to update error status: {db_err}[/red]")
             
         return False
+    finally:
+        # Always release the lock, even if processing fails
+        await redis_client.delete(lock_key)
 
 async def batch_process(package_names: List[str], max_parallel: int = 1, extract_only: bool = False) -> None:
     """

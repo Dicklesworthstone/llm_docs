@@ -2,6 +2,8 @@
 Tests for the FastAPI application.
 """
 
+import asyncio
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -228,3 +230,82 @@ async def test_create_package_invalid_name(client: TestClient):
     
     # Check that it returns a validation error
     assert response.status_code == 400    
+
+@pytest.mark.asyncio
+async def test_concurrent_package_processing(client: TestClient, async_session: AsyncSession, mocker):
+    """Test that concurrent requests to process the same package are handled correctly."""
+    # Mock the actual processing function to avoid real processing
+    mocker.patch(
+        "llm_docs.api.app.process_package",
+        side_effect=lambda pkg_id: asyncio.sleep(0.1)  # Just a small delay to simulate work
+    )
+    
+    # Mock Redis for locking - first call succeeds, others fail
+    mock_redis = mocker.patch("llm_docs.api.app.redis_client")
+    mock_redis.set.side_effect = [True, False, False]  # First call gets lock, others don't
+    
+    # Create a test package
+    package = Package(
+        name="concurrent-test-package",
+        status=PackageStatus.DISCOVERED
+    )
+    
+    async_session.add(package)
+    await async_session.commit()
+    await async_session.refresh(package)
+    
+    # Make concurrent requests
+    response1 = client.post(f"/packages/{package.id}/process")
+    response2 = client.post(f"/packages/{package.id}/process")
+    response3 = client.post(f"/packages/{package.id}/process")
+    
+    # First request should succeed, others should indicate the package is already being processed
+    assert response1.status_code == 200
+    assert "Processing started" in response1.json()["message"]
+    
+    assert response2.status_code == 400
+    assert "already being processed" in response2.json()["detail"]
+    
+    assert response3.status_code == 400
+    assert "already being processed" in response3.json()["detail"]
+    
+    # Verify that the mock was called correctly
+    mock_redis.set.assert_called_with(
+        f"processing:package:{package.id}", "1", nx=True, ex=3600
+    )
+    assert mock_redis.set.call_count == 3    
+
+@pytest.mark.asyncio
+async def test_discover_packages(client: TestClient, async_session: AsyncSession, mocker):
+    """Test the discover packages endpoint."""
+    # Create mock packages for the discovery result
+    mock_packages = [
+        Package(id=1, name="package1", priority=100),
+        Package(id=2, name="package2", priority=90),
+        Package(id=3, name="package3", priority=80)
+    ]
+    
+    # Mock the PackageDiscovery.discover_and_store_packages method
+    mock_discover = mocker.patch("llm_docs.package_discovery.PackageDiscovery.discover_and_store_packages")
+    mock_discover.return_value = mock_packages
+    
+    # Mock the PackageDiscovery.close method
+    mocker.patch("llm_docs.package_discovery.PackageDiscovery.close")
+    
+    # Make the request
+    response = client.post("/discover?limit=10")
+    
+    # Check the response
+    assert response.status_code == 200
+    assert "Discovered 3 packages" in response.json()["message"]
+    
+    # Verify the mock was called correctly
+    mock_discover.assert_called_once_with(10)
+    
+    # Test with process_top parameter
+    mocker.patch("llm_docs.api.app.process_package")
+    
+    response = client.post("/discover?limit=10&process_top=2")
+    
+    assert response.status_code == 200
+    assert "Started processing 2 packages" in response.json()["processing"]    

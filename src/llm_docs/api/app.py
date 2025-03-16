@@ -6,9 +6,10 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import redis.asyncio as redis
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Path, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from rich.console import Console
@@ -28,6 +29,10 @@ from llm_docs.storage.models import (
 
 # Initialize console
 console = Console()
+
+# Initialize Redis client for distributed locking
+redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+redis_client = redis.from_url(redis_url, decode_responses=True)
 
 # FastAPI models for requests and responses
 class PackageCreate(BaseModel):
@@ -89,110 +94,138 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Mount static files directory
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
 # Mount static files for the docs
 app.mount("/docs/original", StaticFiles(directory="docs"), name="original_docs")
 app.mount("/docs/distilled", StaticFiles(directory="distilled_docs"), name="distilled_docs")
 
 # Background task for processing packages
+# Background task for processing packages
 async def process_package(package_id: int):
     """Background task to extract and distill documentation for a package."""
-    async with transaction() as session:
-        try:
-            # Get the package
-            result = await session.execute(select(Package).where(Package.id == package_id))
-            package = result.scalar_one()
-            
-            # Extract documentation
-            extractor = DocumentationExtractor()
-            doc_path = await extractor.process_package_documentation(package)
-            
-            if doc_path:
-                # Update package with documentation path
-                package.original_doc_path = doc_path
-                package.docs_extraction_date = datetime.now()
-                package.status = PackageStatus.DOCS_EXTRACTED
-                session.add(package)
-                await session.commit()
-                
-                # Create distillation job
-                job = DistillationJob(
-                    package_id=package.id,
-                    status=DistillationJobStatus.PENDING,
-                    input_file_path=doc_path
-                )
-                session.add(job)
-                await session.commit()
-                
-                # Start distillation
-                package.status = PackageStatus.DISTILLATION_IN_PROGRESS
-                package.distillation_start_date = datetime.now()
-                session.add(package)
-                
-                job.status = DistillationJobStatus.IN_PROGRESS
-                job.started_at = datetime.now()
-                session.add(job)
-                await session.commit()
-                
-                # Run distillation
-                distiller = DocumentationDistiller()
-                distilled_path = await distiller.distill_documentation(package, doc_path)
-                
-                # Update package and job
-                if distilled_path:
-                    package.distilled_doc_path = distilled_path
-                    package.status = PackageStatus.DISTILLATION_COMPLETED
-                    package.distillation_end_date = datetime.now()
-                    
-                    job.status = DistillationJobStatus.COMPLETED
-                    job.completed_at = datetime.now()
-                    job.output_file_path = distilled_path
-                    job.chunks_processed = job.num_chunks
-                else:
-                    package.status = PackageStatus.DISTILLATION_FAILED
-                    
-                    job.status = DistillationJobStatus.FAILED
-                    job.error_message = "Distillation failed"
-                    
-                session.add(package)
-                session.add(job)
-                await session.commit()
-                
-        except Exception as e:
-            # Log the exception
-            console.print(f"[red]Error processing package {package_id}: {e}[/red]")
-            
-            # Update package status
+    # Create lock key for this package
+    lock_key = f"processing:package:{package_id}"
+    
+    # Try to acquire lock
+    lock_acquired = await redis_client.set(lock_key, "1", nx=True, ex=3600)  # 1 hour timeout
+    
+    if not lock_acquired:
+        console.print(f"[yellow]Package {package_id} is already being processed by another worker[/yellow]")
+        return
+    
+    try:
+        async with transaction() as session:
             try:
+                # Get the package
                 result = await session.execute(select(Package).where(Package.id == package_id))
-                package = result.scalar_one_or_none()
+                package = result.scalar_one()
                 
-                if package:
-                    # Only update if not already in a final state
-                    if package.status not in [PackageStatus.DISTILLATION_COMPLETED, PackageStatus.DISTILLATION_FAILED]:
-                        package.status = PackageStatus.DISTILLATION_FAILED
-                        session.add(package)
-                    
-                    # Update job if exists and not in final state
-                    job_result = await session.execute(
-                        select(DistillationJob)
-                        .where(DistillationJob.package_id == package_id)
-                        .order_by(DistillationJob.id.desc())
-                    )
-                    job = job_result.scalar_first()
-                    
-                    if job and job.status not in [DistillationJobStatus.COMPLETED, DistillationJobStatus.FAILED]:
-                        job.status = DistillationJobStatus.FAILED
-                        job.error_message = str(e)
-                        job.completed_at = datetime.now()
-                        session.add(job)
-                        
+                # Extract documentation
+                extractor = DocumentationExtractor()
+                doc_path = await extractor.process_package_documentation(package)
+                
+                if doc_path:
+                    # Update package with documentation path
+                    package.original_doc_path = doc_path
+                    package.docs_extraction_date = datetime.now()
+                    package.status = PackageStatus.DOCS_EXTRACTED
+                    session.add(package)
                     await session.commit()
-            except Exception as inner_error:
-                console.print(f"[bold red]Failed to update package status for {package_id}: {inner_error}[/bold red]")
-
+                    
+                    # Create distillation job
+                    job = DistillationJob(
+                        package_id=package.id,
+                        status=DistillationJobStatus.PENDING,
+                        input_file_path=doc_path
+                    )
+                    session.add(job)
+                    await session.commit()
+                    
+                    # Start distillation
+                    package.status = PackageStatus.DISTILLATION_IN_PROGRESS
+                    package.distillation_start_date = datetime.now()
+                    session.add(package)
+                    
+                    job.status = DistillationJobStatus.IN_PROGRESS
+                    job.started_at = datetime.now()
+                    session.add(job)
+                    await session.commit()
+                    
+                    # Run distillation
+                    distiller = DocumentationDistiller()
+                    distilled_path = await distiller.distill_documentation(package, doc_path)
+                    
+                    # Update package and job
+                    if distilled_path:
+                        package.distilled_doc_path = distilled_path
+                        package.status = PackageStatus.DISTILLATION_COMPLETED
+                        package.distillation_end_date = datetime.now()
+                        
+                        job.status = DistillationJobStatus.COMPLETED
+                        job.completed_at = datetime.now()
+                        job.output_file_path = distilled_path
+                        job.chunks_processed = job.num_chunks
+                    else:
+                        package.status = PackageStatus.DISTILLATION_FAILED
+                        
+                        job.status = DistillationJobStatus.FAILED
+                        job.error_message = "Distillation failed"
+                        
+                    session.add(package)
+                    session.add(job)
+                    await session.commit()
+                    
+            except Exception as e:
+                # Log the exception
+                console.print(f"[red]Error processing package {package_id}: {e}[/red]")
+                
+                # Update package status
+                try:
+                    result = await session.execute(select(Package).where(Package.id == package_id))
+                    package = result.scalar_one_or_none()
+                    
+                    if package:
+                        # Only update if not already in a final state
+                        if package.status not in [PackageStatus.DISTILLATION_COMPLETED, PackageStatus.DISTILLATION_FAILED]:
+                            package.status = PackageStatus.DISTILLATION_FAILED
+                            session.add(package)
+                        
+                        # Update job if exists and not in final state
+                        job_result = await session.execute(
+                            select(DistillationJob)
+                            .where(DistillationJob.package_id == package_id)
+                            .order_by(DistillationJob.id.desc())
+                        )
+                        job = job_result.scalar_first()
+                        
+                        if job and job.status not in [DistillationJobStatus.COMPLETED, DistillationJobStatus.FAILED]:
+                            job.status = DistillationJobStatus.FAILED
+                            job.error_message = str(e)
+                            job.completed_at = datetime.now()
+                            session.add(job)
+                            
+                        await session.commit()
+                except Exception as inner_error:
+                    console.print(f"[bold red]Failed to update package status for {package_id}: {inner_error}[/bold red]")
+    finally:
+        # Always release the lock, even if processing fails
+        await redis_client.delete(lock_key)
 
 # API routes
-@app.get("/", response_model=StatsResponse)
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    """Serve the landing page."""
+    landing_page = Path("static/landing-page.html")
+    if landing_page.exists():
+        return FileResponse("static/landing-page.html")
+    else:
+        # Fallback if the file doesn't exist
+        return HTMLResponse("<html><body><h1>LLM-Docs</h1><p>Welcome to LLM-Docs API</p></body></html>")
+
+@app.get("/stats", response_model=StatsResponse)
 async def get_stats(session: AsyncSession = Depends(get_async_session)):
     """Get basic statistics and info about the system."""
     # Count packages
@@ -415,34 +448,54 @@ async def get_original_documentation(
         )
     
     # Sanitize the path to prevent directory traversal attacks
-    doc_path = Path(package.original_doc_path)
-    docs_dir = Path("docs").resolve()
-    
     try:
-        # Resolve to absolute paths
-        if not doc_path.is_absolute():
-            doc_path = docs_dir / doc_path.name
+        # Normalize path and resolve symlinks
+        doc_path = Path(package.original_doc_path).resolve(strict=True)
+        docs_dir = Path("docs").resolve()
+        current_dir = Path.cwd().resolve()
         
-        doc_path = doc_path.resolve()
-        
-        # Check if file exists and is within allowed directory
-        if not doc_path.exists():
+        # Verify file exists
+        if not doc_path.exists() or not doc_path.is_file():
             raise HTTPException(
                 status_code=404,
                 detail=f"Documentation file not found for package '{package.name}'"
             )
             
-        if not str(doc_path).startswith(str(docs_dir)) and not str(doc_path.parent).startswith(str(Path.cwd())):
+        # Check if the file is within allowed directories
+        # Use is_relative_to if Python 3.9+, otherwise use string-based check
+        try:
+            if hasattr(doc_path, 'is_relative_to'):  # Python 3.9+
+                is_in_docs_dir = doc_path.is_relative_to(docs_dir)
+                is_in_current_dir = doc_path.is_relative_to(current_dir)
+            else:
+                # Fallback for earlier Python versions
+                docs_dir_str = str(docs_dir)
+                current_dir_str = str(current_dir)
+                doc_path_str = str(doc_path)
+                is_in_docs_dir = doc_path_str.startswith(docs_dir_str)
+                is_in_current_dir = doc_path_str.startswith(current_dir_str)
+                
+            if not (is_in_docs_dir or is_in_current_dir):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access to this file is not allowed"
+                )
+        except (ValueError, TypeError):
             raise HTTPException(
                 status_code=403,
-                detail="Access to this file is not allowed"
-            )
+                detail="Invalid file path"
+            ) from None
         
         return FileResponse(
             str(doc_path),
             media_type="text/markdown",
             filename=f"{package.name}_original_docs.md"
         )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Documentation file not found for package '{package.name}'"
+        ) from None
     except (ValueError, OSError) as e:
         # Handle path resolution errors
         raise HTTPException(
@@ -469,34 +522,54 @@ async def get_distilled_documentation(
         )
     
     # Sanitize the path to prevent directory traversal attacks
-    doc_path = Path(package.distilled_doc_path)
-    distilled_docs_dir = Path("distilled_docs").resolve()
-    
     try:
-        # Resolve to absolute paths
-        if not doc_path.is_absolute():
-            doc_path = distilled_docs_dir / doc_path.name
+        # Normalize path and resolve symlinks
+        doc_path = Path(package.distilled_doc_path).resolve(strict=True)
+        distilled_docs_dir = Path("distilled_docs").resolve()
+        current_dir = Path.cwd().resolve()
         
-        doc_path = doc_path.resolve()
-        
-        # Check if file exists and is within allowed directory
-        if not doc_path.exists():
+        # Verify file exists
+        if not doc_path.exists() or not doc_path.is_file():
             raise HTTPException(
                 status_code=404,
                 detail=f"Distilled documentation file not found for package '{package.name}'"
             )
             
-        if not str(doc_path).startswith(str(distilled_docs_dir)) and not str(doc_path.parent).startswith(str(Path.cwd())):
+        # Check if the file is within allowed directories
+        # Use is_relative_to if Python 3.9+, otherwise use string-based check
+        try:
+            if hasattr(doc_path, 'is_relative_to'):  # Python 3.9+
+                is_in_distilled_dir = doc_path.is_relative_to(distilled_docs_dir)
+                is_in_current_dir = doc_path.is_relative_to(current_dir)
+            else:
+                # Fallback for earlier Python versions
+                distilled_dir_str = str(distilled_docs_dir)
+                current_dir_str = str(current_dir)
+                doc_path_str = str(doc_path)
+                is_in_distilled_dir = doc_path_str.startswith(distilled_dir_str)
+                is_in_current_dir = doc_path_str.startswith(current_dir_str)
+                
+            if not (is_in_distilled_dir or is_in_current_dir):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Access to this file is not allowed"
+                )
+        except (ValueError, TypeError):
             raise HTTPException(
                 status_code=403,
-                detail="Access to this file is not allowed"
-            )
+                detail="Invalid file path"
+            ) from None
         
         return FileResponse(
             str(doc_path),
             media_type="text/markdown",
             filename=f"{package.name}_distilled_docs.md"
         )
+    except FileNotFoundError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Distilled documentation file not found for package '{package.name}'"
+        ) from None
     except (ValueError, OSError) as e:
         # Handle path resolution errors
         raise HTTPException(

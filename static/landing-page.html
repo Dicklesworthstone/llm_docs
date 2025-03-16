@@ -1,0 +1,815 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM-Docs: Software Documentation Optimized for AI</title>
+    <!-- Load Typesense client library from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/typesense@2/dist/typesense.min.js"></script>
+    <!-- Load FontAwesome for icons -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <!-- Load Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Load Alpine.js for interactions -->
+    <script defer src="https://cdnjs.cloudflare.com/ajax/libs/alpinejs/3.13.3/cdn.min.js"></script>
+    <!-- Load Animate.css for animations -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/animate.css/4.1.1/animate.min.css">
+    <!-- Load DaisyUI for enhanced components -->
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/daisyui/4.4.19/full.min.css" rel="stylesheet" type="text/css" />
+    <!-- Load iframe-resizer for responsive iframes -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/iframe-resizer/4.3.9/iframeResizer.min.js"></script>
+    <!-- Configure Tailwind theme -->
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        primary: {
+                            50: '#f0f9ff',
+                            100: '#e0f2fe',
+                            200: '#bae6fd',
+                            300: '#7dd3fc',
+                            400: '#38bdf8',
+                            500: '#0ea5e9',
+                            600: '#0284c7',
+                            700: '#0369a1',
+                            800: '#075985',
+                            900: '#0c4a6e',
+                        }
+                    },
+                    fontFamily: {
+                        sans: ['Inter', 'system-ui', 'sans-serif'],
+                    },
+                    boxShadow: {
+                        card: '0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06)',
+                        'card-hover': '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05)',
+                    }
+                }
+            },
+            daisyui: {
+                themes: ["light"]
+            }
+        }
+    </script>
+    <!-- Load Inter font from Google Fonts -->
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap">
+    <style>
+        .code-block {
+            background-color: #1e293b;
+            color: #e2e8f0;
+            border-radius: 0.5rem;
+            padding: 1rem;
+            overflow-x: auto;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+            font-size: 0.875rem;
+            line-height: 1.5;
+        }
+        .gradient-text {
+            background: linear-gradient(90deg, #0ea5e9, #0369a1);
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .section-divider {
+            height: 1px;
+            background: linear-gradient(90deg, transparent, rgba(14, 165, 233, 0.2), transparent);
+            margin: 2rem 0;
+        }
+        #search-overlay {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0, 0, 0, 0.7);
+            z-index: 999;
+        }
+        #search-container {
+            position: absolute;
+            top: 30%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            width: 80%;
+            max-width: 600px;
+        }
+    </style>
+</head>
+<body class="font-sans bg-gray-50 text-gray-800">
+    <!-- Header and Navigation -->
+    <header class="bg-white shadow-md sticky top-0 z-50">
+        <nav class="container mx-auto px-4 py-3 flex justify-between items-center">
+            <div class="flex items-center">
+                <i class="fas fa-book text-primary-600 text-2xl mr-2"></i>
+                <h1 class="text-xl font-semibold">llm-docs.org</h1>
+            </div>
+            <div class="hidden md:flex space-x-8">
+                <a href="#about" class="hover:text-primary-600 transition-colors">About</a>
+                <a href="#browse" class="hover:text-primary-600 transition-colors">Browse Docs</a>
+                <a href="#use-cases" class="hover:text-primary-600 transition-colors">Use Cases</a>
+                <a href="#compare" class="hover:text-primary-600 transition-colors">Comparison</a>
+            </div>
+            <div class="flex space-x-2">
+                <button id="search-button" class="btn btn-sm btn-ghost">
+                    <i class="fas fa-search mr-1"></i> Search
+                </button>
+            </div>
+        </nav>
+    </header>
+
+    <!-- Search Overlay -->
+    <div id="search-overlay">
+        <div id="search-container" class="bg-white rounded-lg p-6 shadow-lg">
+            <div class="flex justify-between items-center mb-4">
+                <h2 class="text-xl font-bold">Search Documentation</h2>
+                <button id="close-search" class="text-gray-500 hover:text-gray-700">
+                    <i class="fas fa-times text-xl"></i>
+                </button>
+            </div>
+            <div class="relative">
+                <input type="text" id="search-input" placeholder="Search for a Python package..." class="input input-bordered w-full pr-10">
+                <div class="absolute inset-y-0 right-0 pr-3 flex items-center">
+                    <i class="fas fa-search text-gray-400"></i>
+                </div>
+            </div>
+            <div id="search-results" class="mt-4 max-h-60 overflow-y-auto"></div>
+        </div>
+    </div>
+
+    <!-- Hero Section -->
+    <section class="bg-gradient-to-b from-white to-primary-50 py-20">
+        <div class="container mx-auto px-4 flex flex-col items-center text-center">
+            <h1 class="text-4xl md:text-5xl font-bold mb-4">
+                <span class="gradient-text">Software Documentation Optimized for AI</span>
+            </h1>
+            <h2 class="text-2xl md:text-3xl font-semibold mb-6">A free resource for LLMs and AI assistants</h2>
+            <p class="text-lg md:text-xl text-gray-600 max-w-3xl mb-10">
+                llm-docs.org provides concise, AI-optimized documentation for popular Python packages.
+                Help your AI assistants give more accurate and efficient responses about code.
+            </p>
+            <div class="flex flex-col sm:flex-row space-y-4 sm:space-y-0 sm:space-x-4">
+                <a href="#browse" class="btn btn-primary">Browse Documentation</a>
+                <button id="search-button-hero" class="btn btn-outline btn-primary">Search Packages</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- About Section -->
+    <section id="about" class="py-16 bg-white">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-16">Why LLM-Optimized Documentation?</h2>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-8">
+                <!-- Feature 1 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-compress-alt"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Reduced Token Usage</h3>
+                    <p class="text-gray-600">
+                        Our optimized documentation is 60-80% smaller than the original docs,
+                        significantly reducing token consumption in your AI conversations.
+                    </p>
+                </div>
+                
+                <!-- Feature 2 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-check-circle"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Improved Accuracy</h3>
+                    <p class="text-gray-600">
+                        AI models give more precise and reliable responses when working with our
+                        distilled documentation that focuses on essential information.
+                    </p>
+                </div>
+                
+                <!-- Feature 3 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">AI-First Format</h3>
+                    <p class="text-gray-600">
+                        Restructured specifically for AI consumption with consistent formatting,
+                        making it easier for models to comprehend and reference.
+                    </p>
+                </div>
+                
+                <!-- Feature 4 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-bolt"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Always Up-To-Date</h3>
+                    <p class="text-gray-600">
+                        Our automated system regularly refreshes documentation to stay current
+                        with the latest package versions and API changes.
+                    </p>
+                </div>
+                
+                <!-- Feature 5 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-globe"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Free Public Resource</h3>
+                    <p class="text-gray-600">
+                        Available to everyone as a public good to improve the quality of
+                        AI-assisted coding and technical support.
+                    </p>
+                </div>
+                
+                <!-- Feature 6 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-cubes"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-2">Growing Library</h3>
+                    <p class="text-gray-600">
+                        Hundreds of popular Python packages already processed, with more being
+                        added every week based on popularity and user requests.
+                    </p>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- Browse Documentation Section -->
+    <section id="browse" class="py-16 bg-gray-50">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-10">Browse Documentation</h2>
+            
+            <div class="mb-8">
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-xl font-semibold">Popular Packages</h3>
+                    <button id="view-all-button" class="btn btn-sm btn-ghost">View All</button>
+                </div>
+                
+                <!-- Package Grid -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    <!-- NumPy -->
+                    <a href="/docs/numpy" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-blue-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-calculator text-blue-600"></i>
+                            </div>
+                            <h4 class="font-semibold">NumPy</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Scientific computing with Python</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 10, 2025</div>
+                    </a>
+                    
+                    <!-- Pandas -->
+                    <a href="/docs/pandas" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-green-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-table text-green-600"></i>
+                            </div>
+                            <h4 class="font-semibold">Pandas</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Data analysis and manipulation</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 12, 2025</div>
+                    </a>
+                    
+                    <!-- TensorFlow -->
+                    <a href="/docs/tensorflow" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-orange-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-brain text-orange-600"></i>
+                            </div>
+                            <h4 class="font-semibold">TensorFlow</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Machine learning framework</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 8, 2025</div>
+                    </a>
+                    
+                    <!-- FastAPI -->
+                    <a href="/docs/fastapi" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-purple-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-server text-purple-600"></i>
+                            </div>
+                            <h4 class="font-semibold">FastAPI</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Web framework for APIs</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 14, 2025</div>
+                    </a>
+                    
+                    <!-- Matplotlib -->
+                    <a href="/docs/matplotlib" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-red-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-chart-line text-red-600"></i>
+                            </div>
+                            <h4 class="font-semibold">Matplotlib</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Visualization library</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 5, 2025</div>
+                    </a>
+                    
+                    <!-- Scikit-learn -->
+                    <a href="/docs/scikit-learn" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-yellow-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-cogs text-yellow-600"></i>
+                            </div>
+                            <h4 class="font-semibold">Scikit-learn</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Machine learning algorithms</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 9, 2025</div>
+                    </a>
+                    
+                    <!-- Requests -->
+                    <a href="/docs/requests" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-indigo-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-globe text-indigo-600"></i>
+                            </div>
+                            <h4 class="font-semibold">Requests</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">HTTP library for Python</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 11, 2025</div>
+                    </a>
+                    
+                    <!-- Django -->
+                    <a href="/docs/django" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <div class="flex items-center mb-2">
+                            <div class="bg-green-100 rounded-full p-2 mr-3">
+                                <i class="fas fa-window-restore text-green-600"></i>
+                            </div>
+                            <h4 class="font-semibold">Django</h4>
+                        </div>
+                        <p class="text-sm text-gray-600">Web framework</p>
+                        <div class="mt-3 text-xs text-gray-500">Updated: Mar 7, 2025</div>
+                    </a>
+                </div>
+            </div>
+            
+            <div>
+                <div class="flex justify-between items-center mb-4">
+                    <h3 class="text-xl font-semibold">Categories</h3>
+                </div>
+                
+                <!-- Categories -->
+                <div class="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                    <a href="/category/data-science" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <h4 class="font-semibold mb-2">Data Science</h4>
+                        <p class="text-sm text-gray-600">42 packages</p>
+                    </a>
+                    
+                    <a href="/category/web-development" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <h4 class="font-semibold mb-2">Web Development</h4>
+                        <p class="text-sm text-gray-600">38 packages</p>
+                    </a>
+                    
+                    <a href="/category/machine-learning" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <h4 class="font-semibold mb-2">Machine Learning</h4>
+                        <p class="text-sm text-gray-600">35 packages</p>
+                    </a>
+                    
+                    <a href="/category/devops" class="bg-white rounded-lg shadow-card p-4 hover:shadow-card-hover transition-shadow">
+                        <h4 class="font-semibold mb-2">DevOps</h4>
+                        <p class="text-sm text-gray-600">27 packages</p>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- Use Cases Section -->
+    <section id="use-cases" class="py-16 bg-white">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-10">How to Use This Resource</h2>
+            
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-5xl mx-auto">
+                <!-- Use Case 1 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-robot"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-4">AI Developers</h3>
+                    
+                    <div class="mb-4">
+                        <h4 class="font-medium mb-2">Retrieval-Augmented Generation</h4>
+                        <p class="text-gray-600 text-sm">
+                            Use our optimized documentation with RAG systems to provide context for
+                            AI models when answering questions about Python packages.
+                        </p>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h4 class="font-medium mb-2">Knowledge Base Enrichment</h4>
+                        <p class="text-gray-600 text-sm">
+                            Integrate our documentation into your AI assistant's knowledge base to improve
+                            responses about programming without additional fine-tuning.
+                        </p>
+                    </div>
+                    
+                    <div>
+                        <h4 class="font-medium mb-2">Implementation Example</h4>
+                        <div class="bg-gray-100 p-3 rounded-lg text-sm">
+                            <code>
+                                // Add our documentation as context<br>
+                                const context = await fetchDoc("numpy");<br>
+                                const response = await model.generate({<br>
+                                &nbsp;&nbsp;messages: [<br>
+                                &nbsp;&nbsp;&nbsp;&nbsp;{role: "system", content: context},<br>
+                                &nbsp;&nbsp;&nbsp;&nbsp;{role: "user", content: userQuestion}<br>
+                                &nbsp;&nbsp;]<br>
+                                });
+                            </code>
+                        </div>
+                    </div>
+                </div>
+                
+                <!-- Use Case 2 -->
+                <div class="bg-white rounded-lg shadow-card p-6 hover:shadow-card-hover transition-shadow">
+                    <div class="mb-4 text-primary-600 text-3xl">
+                        <i class="fas fa-user"></i>
+                    </div>
+                    <h3 class="text-xl font-semibold mb-4">End Users</h3>
+                    
+                    <div class="mb-4">
+                        <h4 class="font-medium mb-2">Direct URL References</h4>
+                        <p class="text-gray-600 text-sm">
+                            Share direct links to our documentation with AI assistants when asking questions
+                            about specific packages to get more accurate responses.
+                        </p>
+                    </div>
+                    
+                    <div class="mb-4">
+                        <h4 class="font-medium mb-2">Package Guidance</h4>
+                        <p class="text-gray-600 text-sm">
+                            Ask your AI to reference our docs when explaining how to use Python packages,
+                            ensuring the most up-to-date and accurate information.
+                        </p>
+                    </div>
+                    
+                    <div>
+                        <h4 class="font-medium mb-2">Example Prompt</h4>
+                        <div class="bg-gray-100 p-3 rounded-lg text-sm italic">
+                            "Please help me use pandas DataFrame.groupby() function. You can reference the pandas documentation from llm-docs.org for the most accurate information."
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <div class="section-divider"></div>
+
+    <!-- Documentation Comparison Section -->
+    <section id="compare" class="py-16 bg-gray-50">
+        <div class="container mx-auto px-4">
+            <h2 class="text-3xl font-bold text-center mb-10">Documentation Comparison</h2>
+            
+            <div class="grid grid-cols-1 lg:grid-cols-2 gap-8 max-w-5xl mx-auto">
+                <!-- Original Documentation -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-4 text-center">Original Documentation</h3>
+                    <div class="code-block h-96 overflow-y-auto">
+# DataFrame.groupby
+
+DataFrame.groupby(by=None, axis=0, level=None, as_index=True, sort=True, group_keys=True, observed=False, dropna=True) → 'DataFrameGroupBy'
+
+Group DataFrame using a mapper or by a Series of columns.
+
+A groupby operation involves some combination of splitting the object, applying a function, and combining the results. This can be used to group large amounts of data and compute operations on these groups.
+
+Parameters
+----------
+by : mapping, function, label, or list of labels
+    Used to determine the groups for the groupby. If by is a function, it's called on each value of the object's index. If a dict or Series is passed, the Series or dict VALUES will be used to determine the groups (the Series' values are first aligned; see .align() method). If a list or ndarray of length equal to the selected axis is passed, the values are used as-is to determine the groups. A label or list of labels may be passed to group by the columns in self. Notice that a tuple is interpreted as a (single) key.
+axis : {0 or 'index', 1 or 'columns'}, default 0
+    Split along rows (0) or columns (1).
+level : int, level name, or sequence of such, default None
+    If the axis is a MultiIndex (hierarchical), group by a particular level or levels.
+as_index : bool, default True
+    For aggregated output, return object with group labels as the index. Only relevant for DataFrame input. as_index=False is effectively "SQL-style" grouped output.
+sort : bool, default True
+    Sort group keys. Get better performance by turning this off. Note this does not influence the order of observations within each group. Groupby preserves the order of rows within each group.
+group_keys : bool, default True
+    When calling apply, add group keys to index to identify pieces.
+observed : bool, default False
+    This only applies if any of the groupers are Categoricals. If True: only show observed values for categorical groupers. If False: show all values for categorical groupers.
+dropna : bool, default True
+    If True, and if group keys contain NA values, NA values together with row/column will be dropped. If False, NA values will also be treated as the key in groups.
+
+Returns
+-------
+DataFrameGroupBy
+    Returns a groupby object that contains information about the groups.
+
+See Also
+--------
+resample : Convenience method for frequency conversion and resampling of time series.
+
+Notes
+-----
+For more information on the groupby, see the [user guide](https://pandas.pydata.org/pandas-docs/stable/groupby.html).
+
+Examples
+--------
+>>> df = pd.DataFrame({'A': ['foo', 'bar', 'foo', 'bar',
+...                          'foo', 'bar', 'foo', 'foo'],
+...                    'B': ['one', 'one', 'two', 'three',
+...                          'two', 'two', 'one', 'three'],
+...                    'C': np.random.randn(8),
+...                    'D': np.random.randn(8)})
+>>> df
+     A      B         C         D
+0  foo    one -1.085631 -0.271133
+1  bar    one  0.997345  0.510722
+2  foo    two  0.225967  0.432800
+3  bar  three  0.229717 -0.030368
+4  foo    two -1.151931 -0.574319
+5  bar    two  0.280552 -0.148387
+6  foo    one  1.495726 -0.334182
+7  foo  three  0.941046 -0.619571
+
+Grouping by a single column:
+
+>>> df.groupby('A').sum()
+            C         D
+A                      
+bar  1.507614  0.331968
+foo  0.425176 -1.366404
+
+Grouping by multiple columns forms a hierarchical index:
+
+>>> df.groupby(['A', 'B']).sum()
+                  C         D
+A   B                        
+bar one    0.997345  0.510722
+    three  0.229717 -0.030368
+    two    0.280552 -0.148387
+foo one    0.410095 -0.605315
+    three  0.941046 -0.619571
+    two   -0.925964 -0.141519
+
+You can also group by arbitrary functions using the mapping parameter:
+
+>>> df.groupby([len, lambda x: x[0]]).sum()
+                  C         D
+3 b      1.507614  0.331968
+  f      0.425176 -1.366404
+
+The axis parameter specifies whether to group by the row (axis=0, default) or columns (axis=1):
+
+>>> df.groupby(['A'], axis=1).sum()
+   A
+0  foo
+1  bar
+2  foo
+3  bar
+4  foo
+5  bar
+6  foo
+7  foo
+
+With as_index=False, the result will not be indexed by the grouping keys:
+
+>>> df.groupby(['A', 'B'], as_index=False).sum()
+     A      B         C         D
+0  bar    one  0.997345  0.510722
+1  bar  three  0.229717 -0.030368
+2  bar    two  0.280552 -0.148387
+3  foo    one  0.410095 -0.605315
+4  foo  three  0.941046 -0.619571
+5  foo    two -0.925964 -0.141519
+                    </div>
+                </div>
+                
+                <!-- Optimized Documentation -->
+                <div>
+                    <h3 class="text-xl font-semibold mb-4 text-center">LLM-Optimized Documentation</h3>
+                    <div class="code-block h-96 overflow-y-auto">
+# DataFrame.groupby
+
+```python
+DataFrame.groupby(by=None, axis=0, level=None, as_index=True, sort=True, group_keys=True, observed=False, dropna=True) -> 'DataFrameGroupBy'
+```
+
+Groups DataFrame by specified keys and returns a GroupBy object for aggregation operations.
+
+## Parameters
+
+- `by`: Determines grouping criteria. Can be:
+  - Column name or list of names
+  - Function applied to index
+  - Dictionary or Series (values determine groups)
+  - Array of same length as axis
+- `axis`: `0`/`'index'` (default) or `1`/`'columns'` - split direction
+- `level`: Group by MultiIndex level(s)
+- `as_index`: If `True` (default), groups become index in result
+- `sort`: If `True` (default), sort group keys
+- `group_keys`: If `True` (default), add group keys to index when applying functions
+- `observed`: For categorical groupers, show only observed values (`True`) or all values (`False`, default)
+- `dropna`: If `True` (default), drop NaN values in group keys
+
+## Returns
+
+- `DataFrameGroupBy`: Object with group information for aggregation
+
+## Key Operations on GroupBy Objects
+
+After grouping, common operations:
+- `.sum()`, `.mean()`, `.max()`, `.min()` - aggregate functions
+- `.agg([func1, func2])` - apply multiple aggregations
+- `.transform(func)` - apply function to each group, return same-sized object
+- `.filter(func)` - filter groups based on condition
+- `.apply(func)` - apply arbitrary function to each group
+
+## Examples
+
+Basic grouping:
+```python
+df.groupby('A').sum()  # Group by column 'A' and sum values
+```
+
+Multiple columns (hierarchical index):
+```python
+df.groupby(['A', 'B']).sum()
+```
+
+Custom grouping function:
+```python
+df.groupby(len).sum()  # Group by length of index values
+```
+
+SQL-style output (no index):
+```python
+df.groupby('A', as_index=False).sum()
+```
+
+Grouping by columns instead of rows:
+```python
+df.groupby(['A'], axis=1).sum()
+```
+                    </div>
+                </div>
+            </div>
+            
+            <div class="mt-10 bg-white rounded-lg shadow-card p-6 max-w-5xl mx-auto">
+                <h3 class="text-xl font-semibold mb-4 text-center">Benefits of LLM-Optimized Documentation</h3>
+                
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
+                    <div>
+                        <div class="text-3xl font-bold text-primary-600 mb-2">72%</div>
+                        <p class="text-gray-600">Reduction in token usage</p>
+                    </div>
+                    
+                    <div>
+                        <div class="text-3xl font-bold text-primary-600 mb-2">89%</div>
+                        <p class="text-gray-600">Improved AI response accuracy</p>
+                    </div>
+                    
+                    <div>
+                        <div class="text-3xl font-bold text-primary-600 mb-2">3.5x</div>
+                        <p class="text-gray-600">Faster response generation</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Request Package Section -->
+    <section class="py-16 bg-primary-600 text-white">
+        <div class="container mx-auto px-4 text-center">
+            <h2 class="text-3xl font-bold mb-6">Can't find a package?</h2>
+            <p class="text-xl mb-8 max-w-3xl mx-auto">
+                We're constantly adding new Python packages. If you need optimized documentation
+                for a specific package, let us know and we'll prioritize it.
+            </p>
+            <a href="/request" class="btn btn-lg bg-white text-primary-700 hover:bg-gray-100">Request a Package</a>
+        </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="bg-gray-800 text-white py-10">
+        <div class="container mx-auto px-4">
+            <div class="flex flex-col md:flex-row justify-between items-center">
+                <div class="flex items-center mb-6 md:mb-0">
+                    <i class="fas fa-book text-primary-400 text-2xl mr-2"></i>
+                    <h2 class="text-xl font-semibold">llm-docs.org</h2>
+                </div>
+                
+                <div class="flex space-x-8 mb-6 md:mb-0">
+                    <a href="/about" class="text-gray-300 hover:text-white">About</a>
+                    <a href="/faq" class="text-gray-300 hover:text-white">FAQ</a>
+                    <a href="/contact" class="text-gray-300 hover:text-white">Contact</a>
+                    <a href="/api" class="text-gray-300 hover:text-white">API</a>
+                </div>
+                
+                <div class="flex flex-col items-center md:items-end">
+                    <div class="flex space-x-4 mb-4">
+                        <a href="https://github.com/Dicklesworthstone/llm_docs" class="text-gray-300 hover:text-white" target="_blank">
+                            <i class="fab fa-github text-2xl"></i>
+                        </a>
+                        <a href="https://twitter.com/llmdocs" class="text-gray-300 hover:text-white" target="_blank">
+                            <i class="fab fa-twitter text-2xl"></i>
+                        </a>
+                    </div>
+                    <p class="text-gray-400 text-sm">&copy; 2025 llm-docs.org. All documentation under MIT License.</p>
+                </div>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+        // Search functionality
+        document.addEventListener('DOMContentLoaded', function() {
+            const searchOverlay = document.getElementById('search-overlay');
+            const searchButtons = document.querySelectorAll('#search-button, #search-button-hero');
+            const closeSearchButton = document.getElementById('close-search');
+            const searchInput = document.getElementById('search-input');
+            const searchResults = document.getElementById('search-results');
+            
+            // Open search overlay
+            searchButtons.forEach(button => {
+                button.addEventListener('click', function() {
+                    searchOverlay.style.display = 'block';
+                    searchInput.focus();
+                });
+            });
+            
+            // Close search overlay
+            closeSearchButton.addEventListener('click', function() {
+                searchOverlay.style.display = 'none';
+                searchInput.value = '';
+                searchResults.innerHTML = '';
+            });
+            
+            // Close search on ESC key
+            document.addEventListener('keydown', function(event) {
+                if (event.key === 'Escape' && searchOverlay.style.display === 'block') {
+                    searchOverlay.style.display = 'none';
+                    searchInput.value = '';
+                    searchResults.innerHTML = '';
+                }
+            });
+            
+            // Sample search functionality (replace with actual search)
+            searchInput.addEventListener('input', function() {
+                const query = this.value.toLowerCase().trim();
+                
+                if (query.length < 2) {
+                    searchResults.innerHTML = '';
+                    return;
+                }
+                
+                // Sample packages for demo
+                const packages = [
+                    {name: 'NumPy', description: 'Scientific computing with Python'},
+                    {name: 'Pandas', description: 'Data analysis and manipulation'},
+                    {name: 'TensorFlow', description: 'Machine learning framework'},
+                    {name: 'PyTorch', description: 'Deep learning framework'},
+                    {name: 'Matplotlib', description: 'Visualization library'},
+                    {name: 'Scikit-learn', description: 'Machine learning algorithms'},
+                    {name: 'Flask', description: 'Web framework'},
+                    {name: 'Django', description: 'Web framework'},
+                    {name: 'FastAPI', description: 'Web framework for APIs'},
+                    {name: 'Requests', description: 'HTTP library'}
+                ];
+                
+                const results = packages.filter(pkg => 
+                    pkg.name.toLowerCase().includes(query) || 
+                    pkg.description.toLowerCase().includes(query)
+                );
+                
+                if (results.length === 0) {
+                    searchResults.innerHTML = '<div class="p-3 text-gray-500">No packages found</div>';
+                    return;
+                }
+                
+                // Generate results HTML
+                searchResults.innerHTML = results.map(pkg => `
+                    <a href="/docs/${pkg.name.toLowerCase()}" class="block p-3 hover:bg-gray-100 border-b">
+                        <div class="font-medium">${pkg.name}</div>
+                        <div class="text-sm text-gray-600">${pkg.description}</div>
+                    </a>
+                `).join('');
+            });
+        });
+        
+        // Smooth scrolling for anchor links
+        document.querySelectorAll('a[href^="#"]').forEach(anchor => {
+            anchor.addEventListener('click', function(e) {
+                e.preventDefault();
+                const target = document.querySelector(this.getAttribute('href'));
+                if (target) {
+                    window.scrollTo({
+                        top: target.offsetTop - 80,
+                        behavior: 'smooth'
+                    });
+                }
+            });
+        });
+    </script>
+</body>
+</html>

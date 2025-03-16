@@ -2,10 +2,11 @@
 Dependencies for the FastAPI application.
 """
 
-import threading
+import os
 import time
 from typing import Callable, Dict, Optional
 
+import redis.asyncio as redis
 from fastapi import Depends, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.security import APIKeyHeader
@@ -15,9 +16,13 @@ from starlette.middleware.base import BaseHTTPMiddleware
 # Initialize console
 console = Console()
 
+# Initialize Redis client for distributed rate limiting
+redis_url = os.environ.get("REDIS_URL", "redis://localhost:6379/0")
+redis_client = redis.from_url(redis_url, decode_responses=True)
+
 # Rate limiting
-class RateLimiter:
-    """Simple in-memory rate limiter."""
+class RedisRateLimiter:
+    """Redis-based rate limiter for distributed environments."""
     
     def __init__(self, rate_limit: int = 100, window_seconds: int = 60):
         """
@@ -29,25 +34,46 @@ class RateLimiter:
         """
         self.rate_limit = rate_limit
         self.window_seconds = window_seconds
-        self.requests = {}
-        self.lock = threading.Lock()
         
-    def is_rate_limited(self, key: str) -> bool:
-        now = time.time()
-        with self.lock:
-            if key not in self.requests:
-                self.requests[key] = []
-            # Remove timestamps older than window_seconds
-            self.requests[key] = [t for t in self.requests[key] if now - t < self.window_seconds]
-            self.requests[key].append(now)
-            return len(self.requests[key]) > self.rate_limit
-
+    async def is_rate_limited(self, key: str) -> bool:
+        """
+        Check if a key is rate limited.
+        
+        Args:
+            key: Identifier for rate limiting (e.g., IP address)
+            
+        Returns:
+            True if rate limit exceeded, False otherwise
+        """
+        now = int(time.time())
+        window_start = now - self.window_seconds
+        
+        # Create Redis key for this rate limit check
+        redis_key = f"rate_limit:{key}"
+        
+        async with redis_client.pipeline() as pipe:
+            # Add current timestamp to sorted set
+            await pipe.zadd(redis_key, {str(now): now})
+            
+            # Remove timestamps outside the current window
+            await pipe.zremrangebyscore(redis_key, 0, window_start)
+            
+            # Count requests in the current window
+            await pipe.zcard(redis_key)
+            
+            # Set TTL on the key to auto-cleanup
+            await pipe.expire(redis_key, self.window_seconds * 2)
+            
+            # Execute pipeline
+            _, _, request_count, _ = await pipe.execute()
+            
+            return request_count > self.rate_limit
 
 
 # Create rate limiter instance
-rate_limiter = RateLimiter()
+rate_limiter = RedisRateLimiter()
 
-def rate_limit(request: Request):
+async def rate_limit(request: Request):
     """
     Rate limiting dependency.
     
@@ -59,7 +85,7 @@ def rate_limit(request: Request):
     """
     key = request.client.host if request.client else "unknown"
     
-    if rate_limiter.is_rate_limited(key):
+    if await rate_limiter.is_rate_limited(key):
         raise HTTPException(
             status_code=429,
             detail="Rate limit exceeded. Please try again later."

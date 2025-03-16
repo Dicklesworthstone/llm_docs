@@ -73,13 +73,44 @@ class DocumentationExtractor:
         if cache_file.exists():
             try:
                 with open(cache_file, 'r') as f:
-                    return json.load(f)["url"]
-            except (json.JSONDecodeError, KeyError):
-                pass
+                    cached_data = json.load(f)
+                    if "url" in cached_data and cached_data["url"]:
+                        console.print(f"[green]Using cached documentation URL: {cached_data['url']}[/green]")
+                        return cached_data["url"]
+            except (json.JSONDecodeError, KeyError, OSError) as e:
+                console.print(f"[yellow]Cache read error: {str(e)}. Will try other methods.[/yellow]")
         
-        # Strategy 1: Try PyPI API to get the documentation URL
+        # List of strategies to try, in order of preference
+        strategies = [
+            self._try_pypi_api,
+            self._try_readthedocs_url,
+            self._try_google_search,
+            self._try_github_repo
+        ]
+        
+        # Try each strategy in order
+        for strategy_func in strategies:
+            try:
+                url = await strategy_func(package_name)
+                if url:
+                    # Found a URL, cache it and return
+                    try:
+                        with open(cache_file, 'w') as f:
+                            json.dump({"url": url}, f)
+                    except OSError as e:
+                        console.print(f"[yellow]Failed to cache URL: {str(e)}[/yellow]")
+                    return url
+            except Exception as e:
+                console.print(f"[yellow]Strategy failed: {str(e)}. Trying next...[/yellow]")
+        
+        # If all strategies failed, return None
+        console.print(f"[red]Could not find documentation URL for {package_name}[/red]")
+        return None
+
+    async def _try_pypi_api(self, package_name: str) -> Optional[str]:
+        """Try to find documentation URL from PyPI API."""
         try:
-            response = await self.client.get(f"https://pypi.org/pypi/{package_name}/json")
+            response = await self.client.get(f"https://pypi.org/pypi/{package_name}/json", timeout=10.0)
             if response.status_code == 200:
                 data = response.json()
                 project_urls = data.get("info", {}).get("project_urls", {})
@@ -88,38 +119,47 @@ class DocumentationExtractor:
                 for key, url in project_urls.items():
                     if any(doc_term in key.lower() for doc_term in ["doc", "docs", "documentation"]):
                         console.print(f"[green]Found documentation URL from PyPI: {url}[/green]")
-                        
-                        # Cache the result
-                        with open(cache_file, 'w') as f:
-                            json.dump({"url": url}, f)
-                            
                         return url
                 
-                # Check for homepage or documentation URLs in info
+                # Check for documentation URL in info
                 doc_url = data.get("info", {}).get("documentation_url")
                 if doc_url:
                     console.print(f"[green]Found documentation URL from PyPI info: {doc_url}[/green]")
-                    
-                    # Cache the result
-                    with open(cache_file, 'w') as f:
-                        json.dump({"url": doc_url}, f)
-                        
                     return doc_url
                     
                 # Try homepage as fallback if it looks like a documentation site
                 homepage = data.get("info", {}).get("home_page")
                 if homepage and any(doc_domain in homepage for doc_domain in self.doc_domains):
                     console.print(f"[green]Using homepage as documentation URL: {homepage}[/green]")
-                    
-                    # Cache the result
-                    with open(cache_file, 'w') as f:
-                        json.dump({"url": homepage}, f)
-                        
                     return homepage
+            return None
         except Exception as e:
-            console.print(f"[yellow]Error fetching from PyPI: {str(e)}[/yellow]")
+            console.print(f"[yellow]PyPI API error: {str(e)}[/yellow]")
+            raise
+
+    async def _try_readthedocs_url(self, package_name: str) -> Optional[str]:
+        """Try common ReadTheDocs URL patterns."""
+        # Common readthedocs URL patterns
+        rtd_patterns = [
+            f"https://{package_name}.readthedocs.io/en/latest/",
+            f"https://{package_name}.readthedocs.io/en/stable/",
+            f"https://{package_name.replace('_', '-')}.readthedocs.io/en/latest/",
+            f"https://{package_name.replace('-', '_')}.readthedocs.io/en/latest/"
+        ]
         
-        # Strategy 2: Google search
+        for url in rtd_patterns:
+            try:
+                response = await self.client.head(url, timeout=5.0, follow_redirects=True)
+                if response.status_code < 400:  # Any successful response
+                    console.print(f"[green]Found ReadTheDocs URL: {url}[/green]")
+                    return url
+            except Exception:
+                continue
+        
+        return None
+
+    async def _try_google_search(self, package_name: str) -> Optional[str]:
+        """Try to find documentation URL via Google search."""
         search_query = f"{package_name} python documentation"
         
         try:
@@ -134,21 +174,20 @@ class DocumentationExtractor:
                     accept_button = await page.wait_for_selector('button[aria-label="Accept all"]', timeout=3000)
                     if accept_button:
                         await accept_button.click()
-                except TimeoutError:
-                    pass  # No cookie banner found within timeout
+                except asyncio.TimeoutError:
+                    pass  # No cookie banner or other issue
                     
                 # Extract search results
                 results = await page.evaluate("""
                     () => {
                         const results = [];
-                        const elements = document.querySelectorAll('a[href^="/url"]');
-                        for (const el of elements) {
-                            const url = new URL(el.href, window.location.origin);
+                        document.querySelectorAll('a[href^="/url"]').forEach(a => {
+                            const url = new URL(a.href, window.location.origin);
                             const actualUrl = url.searchParams.get('q');
                             if (actualUrl && !actualUrl.includes('google.com')) {
                                 results.push(actualUrl);
                             }
-                        }
+                        });
                         return results;
                     }
                 """)
@@ -156,43 +195,70 @@ class DocumentationExtractor:
                 if not results:
                     return None
                     
-                # Try to find the most likely documentation URL
+                # Check each result using multiple heuristics
                 for url in results:
-                    # Check if URL contains package name and looks like documentation
                     url_lower = url.lower()
-                    if package_name.lower() in url_lower and any(term in url_lower for term in ["doc", "documentation", "manual", "guide", "tutorial"]):
+                    package_lower = package_name.lower()
+                    
+                    # First priority: URL contains package name and documentation terms
+                    if package_lower in url_lower and any(term in url_lower for term in ["doc", "documentation", "manual", "guide", "tutorial"]):
                         console.print(f"[green]Found documentation URL from Google search: {url}[/green]")
-                        
-                        # Cache the result
-                        with open(cache_file, 'w') as f:
-                            json.dump({"url": url}, f)
-                            
                         return url
                 
-                # Alternative check: domain-based match
+                # Second priority: Domain-based match with common documentation sites
                 for url in results:
                     if any(doc_domain in url for doc_domain in self.doc_domains):
-                        console.print(f"[green]Found documentation URL from Google search (domain match): {url}[/green]")
-                        
-                        # Cache the result
-                        with open(cache_file, 'w') as f:
-                            json.dump({"url": url}, f)
-                            
+                        console.print(f"[green]Found documentation URL from domain match: {url}[/green]")
                         return url
                 
-                # If no clear matches, return the first result
-                first_url = results[0]
-                console.print(f"[yellow]Using first search result as documentation URL: {first_url}[/yellow]")
+                # Fall back to first result if nothing else matches
+                if results:
+                    first_url = results[0]
+                    console.print(f"[yellow]Using first search result as documentation URL: {first_url}[/yellow]")
+                    return first_url
                 
-                # Cache the result
-                with open(cache_file, 'w') as f:
-                    json.dump({"url": first_url}, f)
-                    
-                return first_url
+                return None
         
         except Exception as e:
-            console.print(f"[red]Error during Google search: {str(e)}[/red]")
-            return None
+            console.print(f"[yellow]Google search error: {str(e)}[/yellow]")
+            raise
+
+    async def _try_github_repo(self, package_name: str) -> Optional[str]:
+        """Try to find documentation in the GitHub repository if it exists."""
+        # Try GitHub API to find repository
+        try:
+            response = await self.client.get(f"https://api.github.com/search/repositories?q={package_name}+language:python", timeout=10.0)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("items") and len(data["items"]) > 0:
+                    repo = data["items"][0]
+                    repo_name = repo.get("full_name")
+                    
+                    # Check typical documentation locations in GitHub repos
+                    doc_locations = [
+                        f"https://github.com/{repo_name}/blob/main/docs/README.md",
+                        f"https://github.com/{repo_name}/blob/master/docs/README.md",
+                        f"https://github.com/{repo_name}/blob/main/docs/index.md",
+                        f"https://github.com/{repo_name}/blob/master/docs/index.md",
+                        f"https://github.com/{repo_name}/tree/main/docs",
+                        f"https://github.com/{repo_name}/tree/master/docs",
+                        f"https://github.com/{repo_name}/wiki"
+                    ]
+                    
+                    # Try each location
+                    for url in doc_locations:
+                        try:
+                            resp = await self.client.head(url, timeout=5.0)
+                            if resp.status_code < 400:
+                                console.print(f"[green]Found documentation in GitHub repository: {url}[/green]")
+                                return url
+                        except Exception:
+                            continue
+        
+        except Exception as e:
+            console.print(f"[yellow]GitHub API error: {str(e)}[/yellow]")
+            
+        return None
     
     async def map_documentation_site(self, doc_url: str, max_pages: int = 50) -> List[Dict[str, Any]]:
         """

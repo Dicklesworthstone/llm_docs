@@ -75,20 +75,15 @@ The result: LLMs can provide more accurate, helpful responses about Python libra
 In addition to the Python API, LLM Docs provides a convenient command-line interface:
 
 ```bash
-# Process top 100 packages
+# Discover packages and store in database
 llm-docs discover --limit 100 --process 0
 
-# Process specific packages
-llm-docs process --packages numpy,pandas,requests --output-dir ./docs
+# Process (i.e. extract and distill) a specific package
+llm-docs process numpy
 
 # Only run discovery phase
 llm-docs discover --top 1000 --save-db ./package_db.sqlite
 
-# Only run extraction phase for packages in database
-llm-docs extract --from-db ./package_db.sqlite --limit 10 --output-dir ./original_docs
-
-# Only run distillation phase
-llm-docs distill --input-dir ./original_docs --output-dir ./distilled_docs --type api
 ```
 
 ## Installation
