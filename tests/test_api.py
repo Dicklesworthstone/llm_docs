@@ -43,7 +43,7 @@ async def test_get_stats(client: TestClient, async_session: AsyncSession):
     await async_session.commit()
     
     # Make the request
-    response = client.get("/")
+    response = client.get("/stats")
     
     # Check the response
     assert response.status_code == 200

@@ -458,7 +458,11 @@ class DocumentationExtractor:
                     
                     # If no main content identified, use the body minus the removed elements
                     if not main_content or len(str(main_content)) < 500:
-                        main_content = soup.body
+                        main_content = soup.body if soup.body is not None else soup
+                        
+                        # If even the body doesn't exist (extremely rare), use the whole soup
+                        if not main_content or len(str(main_content)) < 100:
+                            main_content = soup
                     
                     # Convert to string
                     content_html = str(main_content)

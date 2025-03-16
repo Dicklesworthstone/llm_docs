@@ -400,15 +400,30 @@ ok now make a part {part_num} with all the important stuff that you left out fro
         """
         console.print(f"[green]Distilling documentation for {package.name}...[/green]")
         
+        # Check file size first to avoid memory issues
+        file_size = Path(doc_path).stat().st_size
+        if file_size > 50 * 1024 * 1024:  # 50MB threshold
+            console.print(f"[yellow]Documentation file is very large ({file_size/1024/1024:.2f} MB). This may impact performance.[/yellow]")
+        
         # Use context manager for proper cleanup of temp directory
         with tempfile.TemporaryDirectory(prefix="llm_docs_") as temp_dir_path:
             temp_dir = Path(temp_dir_path)
             temp_file = temp_dir / f"{package.name}_distillation_in_progress.md"
             
             try:
-                # Read the combined markdown file
-                with open(doc_path, 'r', encoding='utf-8') as f:
-                    content = f.read()
+                # Read the combined markdown file in chunks if it's large
+                content = ""
+                if file_size > 20 * 1024 * 1024:  # 20MB
+                    # Process large file in chunks to avoid memory issues
+                    console.print(f"[cyan]Reading large file in chunks ({file_size/1024/1024:.2f} MB)[/cyan]")
+                    chunk_size = 10 * 1024 * 1024  # 10MB chunks
+                    with open(doc_path, 'r', encoding='utf-8') as f:
+                        while chunk := f.read(chunk_size):
+                            content += chunk
+                else:
+                    # For smaller files, read all at once
+                    with open(doc_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
                 
                 # Try to detect the type of documentation
                 doc_type = "general"

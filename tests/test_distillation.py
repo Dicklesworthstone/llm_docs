@@ -23,7 +23,7 @@ async def test_split_into_chunks():
     # Create temp dir for output
     with tempfile.TemporaryDirectory() as temp_dir:
         # Create distiller instance
-        distiller = DocumentationDistiller(output_dir=temp_dir, api_key="fake-key")
+        distiller = DocumentationDistiller(output_dir=temp_dir)
         
         # Create test content with sections
         content = """
@@ -68,7 +68,7 @@ async def test_distill_chunk():
         # Create temp dir for output
         with tempfile.TemporaryDirectory() as temp_dir:
             # Create distiller instance
-            distiller = DocumentationDistiller(output_dir=temp_dir, api_key="fake-key")
+            distiller = DocumentationDistiller(output_dir=temp_dir)
             
             # Call the method
             result = await distiller.distill_chunk(
@@ -117,7 +117,7 @@ async def test_distill_documentation():
                 f.write("# Test Documentation\n\nThis is test content.")
             
             # Create distiller instance
-            distiller = DocumentationDistiller(output_dir=temp_dir, api_key="fake-key")
+            distiller = DocumentationDistiller(output_dir=temp_dir)
             
             # Create a package
             package = Package(name="test-package")

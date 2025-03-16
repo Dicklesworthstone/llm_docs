@@ -101,117 +101,125 @@ app.mount("/static", StaticFiles(directory="static"), name="static")
 app.mount("/docs/original", StaticFiles(directory="docs"), name="original_docs")
 app.mount("/docs/distilled", StaticFiles(directory="distilled_docs"), name="distilled_docs")
 
-# Background task for processing packages
-# Background task for processing packages
 async def process_package(package_id: int):
     """Background task to extract and distill documentation for a package."""
     # Create lock key for this package
     lock_key = f"processing:package:{package_id}"
     
-    # Try to acquire lock
-    lock_acquired = await redis_client.set(lock_key, "1", nx=True, ex=3600)  # 1 hour timeout
-    
-    if not lock_acquired:
-        console.print(f"[yellow]Package {package_id} is already being processed by another worker[/yellow]")
-        return
+    # Create a Redis client for this task
+    redis_instance = redis.from_url(redis_url, decode_responses=True)
     
     try:
-        async with transaction() as session:
-            try:
-                # Get the package
-                result = await session.execute(select(Package).where(Package.id == package_id))
-                package = result.scalar_one()
-                
-                # Extract documentation
-                extractor = DocumentationExtractor()
-                doc_path = await extractor.process_package_documentation(package)
-                
-                if doc_path:
-                    # Update package with documentation path
-                    package.original_doc_path = doc_path
-                    package.docs_extraction_date = datetime.now()
-                    package.status = PackageStatus.DOCS_EXTRACTED
-                    session.add(package)
-                    await session.commit()
-                    
-                    # Create distillation job
-                    job = DistillationJob(
-                        package_id=package.id,
-                        status=DistillationJobStatus.PENDING,
-                        input_file_path=doc_path
-                    )
-                    session.add(job)
-                    await session.commit()
-                    
-                    # Start distillation
-                    package.status = PackageStatus.DISTILLATION_IN_PROGRESS
-                    package.distillation_start_date = datetime.now()
-                    session.add(package)
-                    
-                    job.status = DistillationJobStatus.IN_PROGRESS
-                    job.started_at = datetime.now()
-                    session.add(job)
-                    await session.commit()
-                    
-                    # Run distillation
-                    distiller = DocumentationDistiller()
-                    distilled_path = await distiller.distill_documentation(package, doc_path)
-                    
-                    # Update package and job
-                    if distilled_path:
-                        package.distilled_doc_path = distilled_path
-                        package.status = PackageStatus.DISTILLATION_COMPLETED
-                        package.distillation_end_date = datetime.now()
-                        
-                        job.status = DistillationJobStatus.COMPLETED
-                        job.completed_at = datetime.now()
-                        job.output_file_path = distilled_path
-                        job.chunks_processed = job.num_chunks
-                    else:
-                        package.status = PackageStatus.DISTILLATION_FAILED
-                        
-                        job.status = DistillationJobStatus.FAILED
-                        job.error_message = "Distillation failed"
-                        
-                    session.add(package)
-                    session.add(job)
-                    await session.commit()
-                    
-            except Exception as e:
-                # Log the exception
-                console.print(f"[red]Error processing package {package_id}: {e}[/red]")
-                
-                # Update package status
+        # Try to acquire lock
+        lock_acquired = await redis_instance.set(lock_key, "1", nx=True, ex=3600)  # 1 hour timeout
+        
+        if not lock_acquired:
+            console.print(f"[yellow]Package {package_id} is already being processed by another worker[/yellow]")
+            return
+        
+        try:
+            async with transaction() as session:
                 try:
+                    # Get the package
                     result = await session.execute(select(Package).where(Package.id == package_id))
-                    package = result.scalar_one_or_none()
+                    package = result.scalar_one()
                     
-                    if package:
-                        # Only update if not already in a final state
-                        if package.status not in [PackageStatus.DISTILLATION_COMPLETED, PackageStatus.DISTILLATION_FAILED]:
-                            package.status = PackageStatus.DISTILLATION_FAILED
-                            session.add(package)
-                        
-                        # Update job if exists and not in final state
-                        job_result = await session.execute(
-                            select(DistillationJob)
-                            .where(DistillationJob.package_id == package_id)
-                            .order_by(DistillationJob.id.desc())
-                        )
-                        job = job_result.scalar_first()
-                        
-                        if job and job.status not in [DistillationJobStatus.COMPLETED, DistillationJobStatus.FAILED]:
-                            job.status = DistillationJobStatus.FAILED
-                            job.error_message = str(e)
-                            job.completed_at = datetime.now()
-                            session.add(job)
-                            
+                    # Extract documentation
+                    extractor = DocumentationExtractor()
+                    doc_path = await extractor.process_package_documentation(package)
+                    
+                    if doc_path:
+                        # Update package with documentation path
+                        package.original_doc_path = doc_path
+                        package.docs_extraction_date = datetime.now()
+                        package.status = PackageStatus.DOCS_EXTRACTED
+                        session.add(package)
                         await session.commit()
-                except Exception as inner_error:
-                    console.print(f"[bold red]Failed to update package status for {package_id}: {inner_error}[/bold red]")
+                        
+                        # Create distillation job
+                        job = DistillationJob(
+                            package_id=package.id,
+                            status=DistillationJobStatus.PENDING,
+                            input_file_path=doc_path
+                        )
+                        session.add(job)
+                        await session.commit()
+                        
+                        # Start distillation
+                        package.status = PackageStatus.DISTILLATION_IN_PROGRESS
+                        package.distillation_start_date = datetime.now()
+                        session.add(package)
+                        
+                        job.status = DistillationJobStatus.IN_PROGRESS
+                        job.started_at = datetime.now()
+                        session.add(job)
+                        await session.commit()
+                        
+                        # Run distillation
+                        distiller = DocumentationDistiller()
+                        distilled_path = await distiller.distill_documentation(package, doc_path)
+                        
+                        # Update package and job
+                        if distilled_path:
+                            package.distilled_doc_path = distilled_path
+                            package.status = PackageStatus.DISTILLATION_COMPLETED
+                            package.distillation_end_date = datetime.now()
+                            
+                            job.status = DistillationJobStatus.COMPLETED
+                            job.completed_at = datetime.now()
+                            job.output_file_path = distilled_path
+                            job.chunks_processed = job.num_chunks
+                        else:
+                            package.status = PackageStatus.DISTILLATION_FAILED
+                            
+                            job.status = DistillationJobStatus.FAILED
+                            job.error_message = "Distillation failed"
+                            job.completed_at = datetime.now()
+                            
+                        session.add(package)
+                        session.add(job)
+                        await session.commit()
+                        
+                except Exception as e:
+                    # Log the exception
+                    console.print(f"[red]Error processing package {package_id}: {e}[/red]")
+                    
+                    # Update package status
+                    try:
+                        result = await session.execute(select(Package).where(Package.id == package_id))
+                        package = result.scalar_one_or_none()
+                        
+                        if package:
+                            # Only update if not already in a final state
+                            if package.status not in [PackageStatus.DISTILLATION_COMPLETED, PackageStatus.DISTILLATION_FAILED]:
+                                package.status = PackageStatus.DISTILLATION_FAILED
+                                session.add(package)
+                            
+                            # Update job if exists and not in final state
+                            job_result = await session.execute(
+                                select(DistillationJob)
+                                .where(DistillationJob.package_id == package_id)
+                                .order_by(DistillationJob.id.desc())
+                            )
+                            job = job_result.scalar_first()
+                            
+                            if job and job.status not in [DistillationJobStatus.COMPLETED, DistillationJobStatus.FAILED]:
+                                job.status = DistillationJobStatus.FAILED
+                                job.error_message = str(e)
+                                job.completed_at = datetime.now()
+                                session.add(job)
+                                
+                            await session.commit()
+                    except Exception as inner_error:
+                        console.print(f"[bold red]Failed to update package status for {package_id}: {inner_error}[/bold red]")
+        except Exception as outer_error:
+            console.print(f"[bold red]Unhandled error in process_package for {package_id}: {outer_error}[/bold red]")
     finally:
-        # Always release the lock, even if processing fails
-        await redis_client.delete(lock_key)
+        # Always release the lock and close the Redis client, even if processing fails
+        try:
+            await redis_instance.delete(lock_key)
+        finally:
+            await redis_instance.close()
 
 # API routes
 
@@ -461,21 +469,19 @@ async def get_original_documentation(
                 detail=f"Documentation file not found for package '{package.name}'"
             )
             
-        # Check if the file is within allowed directories
-        # Use is_relative_to if Python 3.9+, otherwise use string-based check
+        # Check if the file is within allowed directories using os.path.commonpath for safer comparison
         try:
-            if hasattr(doc_path, 'is_relative_to'):  # Python 3.9+
-                is_in_docs_dir = doc_path.is_relative_to(docs_dir)
-                is_in_current_dir = doc_path.is_relative_to(current_dir)
-            else:
-                # Fallback for earlier Python versions
-                docs_dir_str = str(docs_dir)
-                current_dir_str = str(current_dir)
-                doc_path_str = str(doc_path)
-                is_in_docs_dir = doc_path_str.startswith(docs_dir_str)
-                is_in_current_dir = doc_path_str.startswith(current_dir_str)
-                
-            if not (is_in_docs_dir or is_in_current_dir):
+            # Use os.path for safer absolute path comparison
+            import os
+            doc_path_str = str(doc_path)
+            docs_dir_str = str(docs_dir)
+            current_dir_str = str(current_dir)
+            
+            # Check if doc_path is inside docs_dir or current_dir
+            in_docs_dir = os.path.commonpath([doc_path_str, docs_dir_str]) == docs_dir_str
+            in_current_dir = os.path.commonpath([doc_path_str, current_dir_str]) == current_dir_str
+            
+            if not (in_docs_dir or in_current_dir):
                 raise HTTPException(
                     status_code=403,
                     detail="Access to this file is not allowed"

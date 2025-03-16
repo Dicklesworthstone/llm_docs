@@ -29,27 +29,20 @@ def init_db_sync():
     except RuntimeError as e:
         # Handle case where there's already an event loop (e.g., in a notebook environment)
         if "already running" in str(e):
-            # Get the current loop if one exists
+            console.print("[yellow]Event loop already running, using get_event_loop()[/yellow]")
+            # Get the current loop
             try:
                 loop = asyncio.get_event_loop()
                 if loop.is_running():
-                    # Create a new loop if the current one is running
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        loop.run_until_complete(init_db())
-                    finally:
-                        # Close only if we created it
-                        loop.close()
-                        asyncio.set_event_loop(None)
-                else:
-                    # Use the existing loop if it's not running
-                    loop.run_until_complete(init_db())
+                    console.print("[yellow]Warning: Current event loop is running, this may cause issues[/yellow]")
+                # Just run the coroutine in the existing loop
+                loop.run_until_complete(init_db())
             except Exception as inner_e:
                 console.print(f"[red]Error initializing database: {inner_e}[/red]")
                 raise
         else:
             # Re-raise other runtime errors
+            console.print(f"[red]Runtime error: {e}[/red]")
             raise
     except Exception as e:
         console.print(f"[red]Error initializing database: {e}[/red]")
@@ -99,9 +92,16 @@ def main():
         console.print("[yellow]Initializing database...[/yellow]")
         init_db_sync()  # Run async function in sync context
     
+    # Check for incompatible options
+    if args.reload and args.workers > 1:
+        console.print("[yellow]Warning: --reload is not compatible with multiple workers. Setting workers=1[/yellow]")
+        worker_count = 1
+    else:
+        worker_count = args.workers
+    
     # Start the server
     console.print(f"[green]Starting API server at http://{args.host}:{args.port}[/green]")
-    console.print(f"[blue]Workers: {args.workers}, Reload: {args.reload}[/blue]")
+    console.print(f"[blue]Workers: {worker_count}, Reload: {args.reload}[/blue]")
     console.print("Press Ctrl+C to stop.")
     
     # Configure logging
@@ -136,10 +136,9 @@ def main():
         host=args.host,
         port=args.port,
         reload=args.reload,
-        workers=args.workers if not args.reload else 1,  # Cannot use multiple workers with reload
+        workers=worker_count,
         log_config=log_config
     )
-
 
 if __name__ == "__main__":
     main()

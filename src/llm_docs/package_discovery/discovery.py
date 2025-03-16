@@ -302,11 +302,28 @@ class PackageDiscovery:
         """
         
         top_packages_data = await self.get_top_packages_from_pypi(limit)
-        top_packages = [
-            p["name"] if isinstance(p, dict) and "name" in p else p 
-            for p in top_packages_data
-        ]
-
+        
+        # More robust handling of top_packages_data
+        top_packages = []
+        for p in top_packages_data:
+            try:
+                if isinstance(p, dict) and "name" in p and p["name"]:
+                    # Ensure package name is a non-empty string
+                    package_name = str(p["name"]).strip()
+                    if package_name:
+                        top_packages.append(package_name)
+                elif isinstance(p, str) and p.strip():
+                    # If it's already a string, just make sure it's not empty
+                    top_packages.append(p.strip())
+                else:
+                    console.print(f"[yellow]Skipping invalid package data: {p}[/yellow]")
+            except Exception as e:
+                console.print(f"[yellow]Error processing package data entry: {e}[/yellow]")
+        
+        # Check if we have any valid packages
+        if not top_packages:
+            console.print("[red]No valid package names found in the data[/red]")
+            return []
         
         stored_packages = []
         
