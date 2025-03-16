@@ -12,7 +12,7 @@ from llm_docs.storage.models import Package, PackageStats
 
 
 @pytest.mark.asyncio
-async def test_get_top_packages():
+async def test_get_top_packages_from_pypi():
     """Test getting top packages from PyPI."""
     with patch('browser_use.Browser') as mock_browser:
         # Mock the browser response
@@ -30,7 +30,7 @@ async def test_get_top_packages():
         discovery = PackageDiscovery(mock_session)
         
         # Call the method
-        packages = await discovery.get_top_packages(limit=3)
+        packages = await discovery.get_top_packages_from_pypi(limit=3)
         
         # Check the result
         assert packages == ["numpy", "pandas", "requests"]
@@ -76,7 +76,7 @@ async def test_get_package_stats():
 @pytest.mark.asyncio
 async def test_discover_and_store_packages(session):
     """Test discovering and storing packages."""
-    with patch.object(PackageDiscovery, 'get_top_packages') as mock_get_top, \
+    with patch.object(PackageDiscovery, 'get_top_packages_from_pypi') as mock_get_top, \
          patch.object(PackageDiscovery, 'get_package_stats') as mock_get_stats:
         
         # Mock the responses

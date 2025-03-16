@@ -76,7 +76,7 @@ In addition to the Python API, LLM Docs provides a convenient command-line inter
 
 ```bash
 # Process top 100 packages
-llm-docs process --top 100 --output-dir ./docs
+llm-docs discover --limit 100 --process 0
 
 # Process specific packages
 llm-docs process --packages numpy,pandas,requests --output-dir ./docs
@@ -193,7 +193,7 @@ The system supports multiple configuration methods:
 
 ```ini
 [database]
-url = sqlite:///llm_docs.db
+url = sqlite+aiosqlite:///llm_docs.db
 
 [llm.default]
 provider = anthropic

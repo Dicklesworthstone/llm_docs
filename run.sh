@@ -86,10 +86,10 @@ do
       
       if [ -z "$status" ]; then
         echo -e "${GREEN}Listing all packages...${NC}"
-        python -m llm_docs package list
+        python -m llm_docs list_packages
       else
         echo -e "${GREEN}Listing packages with status ${status}...${NC}"
-        python -m llm_docs package list --status $status
+        python -m llm_docs list_packages --status $status
       fi
       break
       ;;
@@ -104,7 +104,7 @@ do
       
       if [[ $confirm == [yY] || $confirm == [yY][eE][sS] ]]; then
         echo -e "${GREEN}Resetting database...${NC}"
-        python -m llm_docs db init --reset
+        python -m llm_docs init --reset
       else
         echo "Database reset cancelled."
       fi

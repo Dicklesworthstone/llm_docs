@@ -25,7 +25,7 @@ from llm_docs.package_discovery import PackageDiscovery
 from llm_docs.storage.database import init_db, transaction
 from llm_docs.storage.models import DistillationJob, DistillationJobStatus, Package, PackageStatus
 
-db_path = config.database.url.replace("sqlite:///", "")
+db_path = config.database.url.replace("sqlite+aiosqlite:///", "")
 
 # Create rich console
 console = Console()

@@ -22,7 +22,7 @@ else:
 
 class DatabaseConfig(BaseModel):
     """Database configuration."""
-    url: str = Field(default="sqlite:///llm_docs.db")
+    url: str = Field(default="sqlite+aiosqlite:///llm_docs.db")
     echo: bool = Field(default=False)
 
 
