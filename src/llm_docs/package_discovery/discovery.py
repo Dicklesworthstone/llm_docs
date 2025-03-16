@@ -68,9 +68,13 @@ class PackageDiscovery:
         
         packages = []
         try:
-            # Using browser-use to properly handle JavaScript and pagination
-            async with Browser() as browser:
-                page = await browser.new_page()
+            # Using browser-use without async context manager
+            browser = Browser()
+            try:
+                # Initialize the browser
+                await browser.get_session()
+                # Get the current page
+                page = await browser.get_current_page()
                 
                 # Configure page
                 await page.set_viewport_size({"width": 1280, "height": 800})
@@ -123,6 +127,10 @@ class PackageDiscovery:
                     """)
                 
                 packages = packages_data
+                
+            finally:
+                # Always close the browser properly
+                await browser.close()
                 
             # Cache the results
             if packages:

@@ -21,6 +21,7 @@ dependencies = [
     "fastapi",
     "uvicorn",
     "sqlmodel",
+    "docstring_parser",
     "httpx",
     "aiolimiter",
     "aiofiles",

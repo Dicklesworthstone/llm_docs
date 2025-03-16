@@ -13,7 +13,7 @@ from urllib.parse import urljoin, urlparse
 import httpx
 from browser_use import Browser
 from bs4 import BeautifulSoup
-from markitdown import markitdown
+from markitdown import _markitdown as markitdown
 from rich.console import Console
 from tqdm import tqdm
 
@@ -163,8 +163,13 @@ class DocumentationExtractor:
         search_query = f"{package_name} python documentation"
         
         try:
-            async with Browser() as browser:
-                page = await browser.new_page()
+            # Create browser directly instead of using async with
+            browser = Browser()
+            try:
+                # Initialize the browser
+                await browser.get_session()
+                # Get the current page
+                page = await browser.get_current_page()
                 
                 # Navigate to Google search
                 await page.goto(f"https://www.google.com/search?q={search_query}")
@@ -218,6 +223,9 @@ class DocumentationExtractor:
                     return first_url
                 
                 return None
+            finally:
+                # Always close the browser properly
+                await browser.close()
         
         except Exception as e:
             console.print(f"[yellow]Google search error: {str(e)}[/yellow]")
@@ -302,8 +310,13 @@ class DocumentationExtractor:
         except Exception:
             pass  # If we can't check robots.txt, proceed with caution
         
-        async with Browser() as browser:
-            page = await browser.new_page()
+        # Create browser directly instead of using async with
+        browser = Browser()
+        try:
+            # Initialize the browser
+            await browser.get_session()
+            # Get the current page
+            page = await browser.get_current_page()
             
             # Set a reasonable request interval to avoid overloading the server
             request_interval = 2.0  # seconds
@@ -394,6 +407,9 @@ class DocumentationExtractor:
                                     to_visit.append(clean_url)
                     except Exception as e:
                         console.print(f"[yellow]Error visiting {current_url}: {str(e)}[/yellow]")
+        finally:
+            # Always close the browser properly
+            await browser.close()
         
         # Sort pages by priority
         doc_pages.sort(key=lambda x: x["priority"])
@@ -412,8 +428,13 @@ class DocumentationExtractor:
             HTML content of the main documentation area
         """
         try:
-            async with Browser() as browser:
-                page = await browser.new_page()
+            # Create browser directly instead of using async with
+            browser = Browser()
+            try:
+                # Initialize the browser
+                await browser.get_session()
+                # Get the current page
+                page = await browser.get_current_page()
                 
                 # Configure page
                 await page.set_viewport_size({"width": 1280, "height": 800})
@@ -475,6 +496,9 @@ class DocumentationExtractor:
                 except Exception as e:
                     console.print(f"[yellow]Error accessing {url}: {str(e)}[/yellow]")
                     return f"<h1>Error accessing page</h1><p>Could not access {url}: {str(e)}</p>"
+            finally:
+                # Always close the browser properly
+                await browser.close()
         except Exception as e:
             console.print(f"[red]Browser error for {url}: {str(e)}[/red]")
             return f"<h1>Browser error</h1><p>Could not process {url}: {str(e)}</p>"
