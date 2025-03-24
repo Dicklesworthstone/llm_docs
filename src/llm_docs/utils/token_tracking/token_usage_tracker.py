@@ -5,10 +5,14 @@ Adapted from existing token tracking implementation.
 """
 
 import logging
+import warnings
 from datetime import datetime
 from typing import Any, Dict
 
 from termcolor import colored
+
+# Ignore all deprecation warnings everywhere
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 # Configure logging
 logging.basicConfig(
@@ -143,6 +147,10 @@ class TokenUsageTracker:
             self.token_counts_by_category['other']['input'] += input_tokens
             self.token_counts_by_category['other']['output'] += output_tokens
             self.cost_by_category['other'] += task_cost
+    
+    def get_total_tokens(self):
+        """Get the total tokens (input + output) used so far."""
+        return self.total_input_tokens + self.total_output_tokens
     
     def get_enhanced_summary(self) -> Dict[str, Any]:
         """Get enhanced usage summary with category breakdowns and percentages."""

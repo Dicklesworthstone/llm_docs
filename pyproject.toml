@@ -28,7 +28,6 @@ dependencies = [
     "aiosqlite",
     "psutil",
     "async-timeout",
-    "browser-use",
     "termcolor",
     "markitdown",
     "anthropic",
@@ -47,6 +46,10 @@ dependencies = [
     "beautifulsoup4",
     "lxml",
     "typer",
+    "langchain_openai",
+    "langchain-core",
+    "browser-use",
+    "playwright"
 ]
 
 [tool.ruff]
