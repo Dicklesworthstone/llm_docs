@@ -5,6 +5,7 @@ Module for distilling documentation using LLMs via aisuite.
 import asyncio
 import re
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -16,6 +17,7 @@ from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn
 
 from llm_docs.config import config
 from llm_docs.storage.models import Package
+from llm_docs.utils.token_tracking import update_aisuite_response_tracking
 
 # Initialize console
 console = Console()
@@ -191,7 +193,7 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                         console.print("[yellow]Cache file is empty or too small, regenerating...[/yellow]")
             except Exception as e:
                 console.print(f"[yellow]Error reading cache: {str(e)}[/yellow]")
-        
+
         # Make sure cache directory exists
         self.cache_dir.mkdir(exist_ok=True, parents=True)
         
@@ -228,6 +230,10 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                     prev_parts_count=num_parts
                 )
         
+        # Estimate prompt tokens
+        estimated_prompt_tokens = self.estimate_tokens(prompt)
+        console.print(f"[cyan]Estimated prompt tokens: {estimated_prompt_tokens:,}[/cyan]")
+                
         # Send to LLM with robust retry logic
         retry_delay = self.retry_delay
         last_error = None
@@ -241,15 +247,36 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                     "temperature": self.temperature,
                     "max_tokens": self.max_tokens
                 }
-                
+
+                # Track API call time
+                start_time = time.time()
+
                 # Use aisuite client with proper error handling
                 response = await self.client.chat.completions.create(**api_params)
-                
+
+                # Calculate elapsed time
+                elapsed_ms = int((time.time() - start_time) * 1000)
+
                 # Extract the response content with comprehensive fallbacks
                 response_content = self._extract_response_content(response)
-                
+
                 if not response_content:
                     raise ValueError("Received empty response from LLM API")
+
+                # Get completion token count
+                completion_tokens = self.estimate_tokens(response_content)
+
+                # Track token usage using the adapter
+                update_aisuite_response_tracking(
+                    response=response,  # Pass the actual response object
+                    task=f"distill_{doc_type}_part{part_num}",
+                    prompt_tokens=estimated_prompt_tokens,  # Fallback if not available in response
+                    model=self.model
+                )
+
+                # Get completion token count for logging
+                completion_tokens = self.estimate_tokens(response_content)
+                console.print(f"[cyan]Response received in {elapsed_ms}ms, tokens: {completion_tokens:,}[/cyan]")
                 
                 # Rate limit to avoid hitting API limits
                 await asyncio.sleep(1)

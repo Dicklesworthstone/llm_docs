@@ -18,6 +18,7 @@ from rich.console import Console
 from tqdm import tqdm
 
 from llm_docs.storage.models import Package
+from llm_docs.utils.token_tracking import tracker
 
 # Initialize console
 console = Console()
@@ -164,7 +165,11 @@ class DocumentationExtractor:
         
         try:
             # Create browser directly instead of using async with
-            browser = Browser()
+            browser = Browser(options={
+                "headless": True,  # Run in headless mode (no visible browser window)
+                "auto_close": True,  # Automatically close without prompting
+                "wait_for_input": False  # Don't wait for input before closing
+            })
             try:
                 # Initialize the browser
                 await browser.get_session()
@@ -311,7 +316,11 @@ class DocumentationExtractor:
             pass  # If we can't check robots.txt, proceed with caution
         
         # Create browser directly instead of using async with
-        browser = Browser()
+        browser = Browser(options={
+            "headless": True,  # Run in headless mode (no visible browser window)
+            "auto_close": True,  # Automatically close without prompting
+            "wait_for_input": False  # Don't wait for input before closing
+        })
         try:
             # Initialize the browser
             await browser.get_session()
@@ -429,7 +438,11 @@ class DocumentationExtractor:
         """
         try:
             # Create browser directly instead of using async with
-            browser = Browser()
+            browser = Browser(options={
+                "headless": True,  # Run in headless mode (no visible browser window)
+                "auto_close": True,  # Automatically close without prompting
+                "wait_for_input": False  # Don't wait for input before closing
+            })
             try:
                 # Initialize the browser
                 await browser.get_session()

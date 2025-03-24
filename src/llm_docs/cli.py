@@ -20,6 +20,7 @@ from llm_docs.doc_extraction import DocumentationExtractor
 from llm_docs.package_discovery import PackageDiscovery
 from llm_docs.storage.database import init_db, reset_db, transaction
 from llm_docs.storage.models import DistillationJob, DistillationJobStatus, Package, PackageStatus
+from llm_docs.utils.token_tracking import print_usage_report
 
 db_path = config.database.url.replace("sqlite+aiosqlite:///", "")
 
@@ -335,12 +336,20 @@ def process(
                 
                 progress.update(task, description=f"[green]Processing of {package_name} completed.[/green]")
             
+            # Print token usage statistics
+            console.print("\n[bold]LLM API Usage Statistics:[/bold]")
+            print_usage_report()
+
             # Get the final status
             result = await session.execute(
                 select(Package).where(Package.id == package.id)
             )
             package = result.scalar_one()
             
+            # Print token usage statistics
+            console.print("\n[bold]LLM API Usage Statistics:[/bold]")
+            print_usage_report()
+
             if package.status == PackageStatus.DISTILLATION_COMPLETED:
                 console.print(f"[green]Processing of '{package_name}' completed successfully.[/green]")
                 console.print(f"Original documentation: {package.original_doc_path}")
@@ -348,6 +357,7 @@ def process(
             else:
                 console.print(f"[red]Processing of '{package_name}' failed with status: {package.status}[/red]")
     
+
     asyncio.run(run())
 
 
