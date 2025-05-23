@@ -111,7 +111,7 @@ cp .env.template .env
 
 ### Dependencies
 
-- Python 3.8+
+- Python 3.11+ (Note: This requirement is due to the `browser-use` dependency needing Python 3.11 or newer)
 - `browser-use`: For web automation
 - `markitdown`: For HTML to Markdown conversion
 - `httpx`: For async HTTP requests

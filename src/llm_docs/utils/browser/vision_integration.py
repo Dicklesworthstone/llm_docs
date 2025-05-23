@@ -3,8 +3,10 @@ Integration utilities for browser-use vision capabilities.
 """
 
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin # Added urljoin
+import re # Added re
 
+from bs4 import BeautifulSoup # Added BeautifulSoup
 from browser_use import Agent, Browser
 
 from llm_docs.utils.browser.vision_config import VisionConfig, default_vision_config
@@ -106,59 +108,92 @@ def patch_documentation_extractor_with_vision_config():
         # Create a browser with vision configuration
         browser = await create_browser_with_vision_config(self.vision_config)
         
+        doc_pages = []
+        visited_urls = set()
+
         try:
-            # Create an agent with vision configuration
-            agent_kwargs = self.vision_config.get_agent_kwargs()
+            logger.info(f"Opening initial URL: {doc_url}")
+            await browser.open_tab(doc_url)
+            visited_urls.add(doc_url)
+
+            # Get current page content
+            page = await browser.get_current_page()
+            soup = BeautifulSoup(page.html_content, 'html.parser')
+
+            # Extract links
+            links = []
+            for a_tag in soup.find_all('a', href=True):
+                href = a_tag['href']
+                # Resolve relative URLs
+                full_url = urljoin(doc_url, href)
+                links.append(full_url)
             
-            # Set up initial actions to visit the documentation site
-            initial_actions = [
-                {'open_tab': {'url': doc_url}}
+            logger.info(f"Found {len(links)} links on the initial page.")
+
+            # Filter links
+            base_domain = urlparse(doc_url).netloc
+            filtered_links = set() # Use a set to automatically handle duplicates
+
+            # Define documentation patterns
+            doc_patterns = [
+                r'/api', r'/docs', r'/guide', r'/reference', r'/tutorial', r'\.html$'
             ]
-            
-            # Create agent WITH initial_actions
-            agent = Agent(
-                task="""
-                Map this documentation site and find all important pages. Focus on:
-                
-                1. API reference pages
-                2. User guides and tutorials
-                3. Getting started pages
-                4. Core concepts and important sections
 
-                Keep track of each page with its URL, title, and importance level. 
-                Make sure to explore navigation menus and follow links within the same domain.
-                
-                For each page, assign a priority score:
-                - 0 (highest): API reference, class/function documentation
-                - 1 (medium): User guides, tutorials, examples
-                - 2 (low): Other related pages
-                
-                Return a list of important pages organized by priority.
-                """,
-                llm=self.llm,
-                browser=browser,
-                initial_actions=initial_actions,  # Pass initial_actions HERE
-                **agent_kwargs
-            )
-            
-            # Run the agent WITHOUT initial_actions parameter
-            result = await agent.run()
+            for link in links:
+                # Check domain
+                if urlparse(link).netloc != base_domain:
+                    continue
 
-            # Process the agent's output similar to original method
-            extracted_content = result.final_result()
-            visited_urls = result.urls()
-            screenshots = result.screenshots()
+                # Check patterns
+                if any(re.search(pattern, link) for pattern in doc_patterns):
+                    filtered_links.add(link)
             
-            logger.info(f"Agent visited {len(visited_urls)} URLs and took {len(screenshots)} screenshots")
+            logger.info(f"Filtered down to {len(filtered_links)} links matching domain and patterns.")
+
+            # Limit to max_pages (considering the initial page is already visited)
+            # Ensure we don't try to visit the initial page again if it's in filtered_links
+            links_to_visit = [link for link in list(filtered_links) if link != doc_url][:max_pages -1]
+
+            # Process the initial page first
+            try:
+                current_url = doc_url
+                page_title = soup.title.string if soup.title else "No title found"
+                priority = self._assign_priority(current_url, page_title)
+                doc_pages.append({'url': current_url, 'title': page_title, 'priority': priority})
+                logger.info(f"Processed initial page: {current_url} (Title: {page_title}, Priority: {priority})")
+            except Exception as e:
+                logger.error(f"Error processing initial page {doc_url}: {e}")
+
+            # Visit filtered links
+            for i, link_url in enumerate(links_to_visit):
+                if link_url in visited_urls or len(doc_pages) >= max_pages:
+                    continue # Skip already visited or if max_pages limit reached
+                
+                try:
+                    logger.info(f"Visiting link {i+1}/{len(links_to_visit)}: {link_url}")
+                    await browser.open_tab(link_url) # In browser-use, open_tab navigates or opens a new one
+                    visited_urls.add(link_url)
+                    
+                    page = await browser.get_current_page()
+                    link_soup = BeautifulSoup(page.html_content, 'html.parser')
+                    
+                    page_title = link_soup.title.string if link_soup.title else "No title found"
+                    priority = self._assign_priority(link_url, page_title)
+                    
+                    doc_pages.append({'url': link_url, 'title': page_title, 'priority': priority})
+                    logger.info(f"Processed: {link_url} (Title: {page_title}, Priority: {priority})")
+
+                except Exception as e:
+                    logger.error(f"Error processing page {link_url}: {e}")
+                    # Optionally, add a placeholder or skip if a page fails
             
-            # Process agent's output to extract structured data
-            doc_pages = self._parse_agent_site_mapping(extracted_content, visited_urls, 
-                                                    urlparse(doc_url).netloc, doc_url)
-            
-            # Continue with original method's logic for processing results
-            # This part remains the same as in the original method
-            
+            # Sort by priority
+            doc_pages.sort(key=lambda p: p['priority'])
+
             return doc_pages
+        except Exception as e:
+            logger.error(f"Error during site mapping for {doc_url}: {e}")
+            return [] # Return empty list on error
         finally:
             # Always close the browser
             await browser.close()
@@ -166,10 +201,30 @@ def patch_documentation_extractor_with_vision_config():
     # Replace methods with patched versions
     DocumentationExtractor.map_documentation_site = patched_map_documentation_site
     
+    # Add the helper method for priority assignment
+    def _assign_priority(self, url: str, title: str) -> int:
+        """Assigns priority based on URL and title keywords."""
+        url_lower = url.lower()
+        title_lower = title.lower()
+
+        # Priority 0 keywords
+        high_priority_keywords = ["api", "reference", "class", "function", "module"]
+        if any(keyword in url_lower or keyword in title_lower for keyword in high_priority_keywords):
+            return 0
+
+        # Priority 1 keywords
+        medium_priority_keywords = ["guide", "tutorial", "howto", "examples", "getting started", "concepts", "usage"]
+        if any(keyword in url_lower or keyword in title_lower for keyword in medium_priority_keywords):
+            return 1
+            
+        return 2 # Default to low priority
+
+    DocumentationExtractor._assign_priority = _assign_priority
+    
     # Similar implementations for extract_content_from_page and _try_google_search
     # (omitted for brevity but would follow the same pattern)
     
-    logger.info("DocumentationExtractor patched with vision configuration")
+    logger.info("DocumentationExtractor patched with vision configuration and web scraping mapping")
 
 
 def enable_vision_config(vision_config: Optional[VisionConfig] = None):
