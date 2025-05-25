@@ -241,9 +241,13 @@ ok now make a part {part_num} with all the important stuff that you left out fro
         for attempt in range(self.max_retries):
             try:
                 # Prepare API parameters with error handling
+                system_prompt_content = "You are an expert AI assistant. Your task is to distill Python library documentation into a concise, LLM-friendly format. Focus on accuracy and completeness, removing redundancy but preserving all critical technical information."
                 api_params = {
                     "model": self.model,
-                    "messages": [{"role": "user", "content": prompt}],
+                    "messages": [
+                        {"role": "system", "content": system_prompt_content},
+                        {"role": "user", "content": prompt}
+                    ],
                     "temperature": self.temperature,
                     "max_tokens": self.max_tokens
                 }
@@ -252,7 +256,7 @@ ok now make a part {part_num} with all the important stuff that you left out fro
                 start_time = time.time()
 
                 # Use aisuite client with proper error handling
-                response = await self.client.chat.completions.create(**api_params)
+                response = self.client.chat.completions.create(**api_params) # Removed await
 
                 # Calculate elapsed time
                 elapsed_ms = int((time.time() - start_time) * 1000)

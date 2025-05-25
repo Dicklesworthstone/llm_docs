@@ -210,9 +210,7 @@ def update_aisuite_response_tracking(
         tracker.update(
             input_tokens=input_tokens, 
             output_tokens=output_tokens, 
-            task=task, 
-            input_cost=input_cost,
-            output_cost=output_cost
+            task=task
         )
         
         logger.debug(f"Tracked usage for {task}: {input_tokens} input, {output_tokens} output tokens, "
