@@ -362,92 +362,92 @@ class DocumentationExtractor:
             # Track token usage for the agent
             agent_start_tokens = tracker.get_total_tokens()
             
-            # Initialize browser if needed
-            browser = Browser(config=self.browser_config)
+            # Track token usage for the agent
+            agent_start_tokens = tracker.get_total_tokens()
             
-            try:
-                # Create an agent with appropriate model for searching
-                agent = Agent(
-                    task=f"Search for the official documentation site for the Python package '{package_name}'. Look for links to readthedocs.io, official websites with documentation sections, or GitHub documentation. Return only the URL to the main documentation page (not a specific section or article).",
-                    llm=self.llm,
-                    browser=browser,
-                    use_vision=self.use_vision  # Enable vision capabilities if available
-                )
-                
-                # Set up initial actions to perform Google search
-                initial_actions = [
-                    {'open_tab': {'url': f"https://www.google.com/search?q={search_query}"}}
-                ]
-                
-                # Run the agent with initial actions
-                logger.browser_action(f"Running search agent for {package_name}", url=f"https://www.google.com/search?q={search_query}")
-                result = await agent.run(initial_actions=initial_actions)
-                
-                # Calculate token usage
-                agent_end_tokens = tracker.get_total_tokens()
-                tokens_used = agent_end_tokens - agent_start_tokens
-                logger.token_usage(
-                    prompt_tokens=tokens_used * 0.7,  # Approximate split between prompt and completion
-                    completion_tokens=tokens_used * 0.3,
-                    model="gpt-4o"
-                )
-                
-                # Extract the URLs from the agent's output
-                extracted_content = result.final_result()
-                
-                if not extracted_content:
-                    logger.warning(f"Agent couldn't find documentation URL for {package_name}")
-                    return None
-                    
-                # Extract URLs using comprehensive regex pattern
-                urls = re.findall(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!.~\'()*+,;=:@/\\&?#]*)?', extracted_content)
-                
-                if not urls:
-                    urls = re.findall(r'www\.(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!.~\'()*+,;=:@/\\&?#]*)?', extracted_content)
-                    urls = [f"https://{url}" for url in urls]
-                
-                if not urls:
-                    logger.warning(f"No URLs found in agent's response for {package_name}")
-                    return None
-                    
-                # Filter URLs to prioritize documentation sites
-                for url in urls:
-                    url_lower = url.lower()
-                    package_lower = package_name.lower()
-                    
-                    # First priority: URL contains package name and is on a documentation domain
-                    if package_lower in url_lower and any(doc_domain in url_lower for doc_domain in self.doc_domains):
-                        logger.info(f"Found documentation URL from agent search for {package_name}: {url}")
-                        return url
-                
-                # Second priority: URL contains package name and documentation terms
-                for url in urls:
-                    url_lower = url.lower()
-                    package_lower = package_name.lower()
-                    if package_lower in url_lower and any(term in url_lower for term in ["doc", "documentation", "manual", "guide", "tutorial"]):
-                        logger.info(f"Found documentation URL from agent search for {package_name}: {url}")
-                        return url
-                
-                # Third priority: Domain-based match with common documentation sites
-                for url in urls:
-                    if any(doc_domain in url for doc_domain in self.doc_domains):
-                        logger.info(f"Found documentation URL from domain match for {package_name}: {url}")
-                        return url
-                
-                # Fall back to first URL if nothing else matches
-                if urls:
-                    first_url = urls[0]
-                    logger.info(f"Using first URL from agent's response as documentation URL for {package_name}: {first_url}")
-                    return first_url
-                
+            # Set up initial actions to perform Google search
+            initial_actions = [
+                {'open_tab': {'url': f"https://www.google.com/search?q={search_query}"}}
+            ]
+
+            # Create an agent, letting browser-use handle browser lifecycle
+            agent = Agent(
+                task=f"Search for the official documentation site for the Python package '{package_name}'. Look for links to readthedocs.io, official websites with documentation sections, or GitHub documentation. Return only the URL to the main documentation page (not a specific section or article).",
+                llm=self.llm,
+                use_vision=self.use_vision,
+                initial_actions=initial_actions # Pass initial_actions to constructor
+            )
+            
+            # Run the agent
+            logger.browser_action(f"Running search agent for {package_name}", url=f"https://www.google.com/search?q={search_query}")
+            await agent.browser_session.start() 
+            result = await agent.run() # Call run() with no arguments
+            
+            # Calculate token usage
+            agent_end_tokens = tracker.get_total_tokens()
+            tokens_used = agent_end_tokens - agent_start_tokens
+            logger.token_usage(
+                prompt_tokens=tokens_used * 0.7,  # Approximate split between prompt and completion
+                completion_tokens=tokens_used * 0.3,
+                model="gpt-4o"
+            )
+            
+            # Extract the URLs from the agent's output
+            extracted_content = result.final_result()
+            
+            if not extracted_content:
+                logger.warning(f"Agent couldn't find documentation URL for {package_name}")
                 return None
-            finally:
-                # Always close the browser properly
-                await browser.close()
+                
+            # Extract URLs using comprehensive regex pattern
+            urls = re.findall(r'https?://(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!.~\'()*+,;=:@/\\&?#]*)?', extracted_content)
+            
+            if not urls:
+                urls = re.findall(r'www\.(?:[-\w.]|(?:%[\da-fA-F]{2}))+(?:/[-\w%!.~\'()*+,;=:@/\\&?#]*)?', extracted_content)
+                urls = [f"https://{url}" for url in urls]
+            
+            if not urls:
+                logger.warning(f"No URLs found in agent's response for {package_name}")
+                return None
+                
+            # Filter URLs to prioritize documentation sites
+            for url in urls:
+                url_lower = url.lower()
+                package_lower = package_name.lower()
+                
+                # First priority: URL contains package name and is on a documentation domain
+                if package_lower in url_lower and any(doc_domain in url_lower for doc_domain in self.doc_domains):
+                    logger.info(f"Found documentation URL from agent search for {package_name}: {url}")
+                    return url
+            
+            # Second priority: URL contains package name and documentation terms
+            for url in urls:
+                url_lower = url.lower()
+                package_lower = package_name.lower()
+                if package_lower in url_lower and any(term in url_lower for term in ["doc", "documentation", "manual", "guide", "tutorial"]):
+                    logger.info(f"Found documentation URL from agent search for {package_name}: {url}")
+                    return url
+            
+            # Third priority: Domain-based match with common documentation sites
+            for url in urls:
+                if any(doc_domain in url for doc_domain in self.doc_domains):
+                    logger.info(f"Found documentation URL from domain match for {package_name}: {url}")
+                    return url
+            
+            # Fall back to first URL if nothing else matches
+            if urls:
+                first_url = urls[0]
+                logger.info(f"Using first URL from agent's response as documentation URL for {package_name}: {first_url}")
+                return first_url
+            
+            return None
                 
         except Exception as e:
             logger.error(f"Agent search error for {package_name}: {str(e)}")
             raise
+        finally:
+            if 'agent' in locals() and hasattr(agent, 'browser_session') and agent.browser_session:
+                await agent.browser_session.close()
 
     async def _try_github_repo(self, package_name: str) -> Optional[str]:
         """Try to find documentation in the GitHub repository if it exists."""
@@ -558,13 +558,16 @@ class DocumentationExtractor:
                 logger.warning(f"Cache read error for site map {doc_url}: {str(e)}. Will regenerate.")
         
         # Track token usage for the agent
+        # Track token usage for the agent
         agent_start_tokens = tracker.get_total_tokens()
         
-        # Create browser instance with configured settings
-        browser = Browser(config=self.browser_config)
-        
         try:
-            # Create an agent with appropriate model for site mapping
+            # Set up initial actions to visit the documentation site
+            initial_actions = [
+                {'open_tab': {'url': doc_url}}
+            ]
+
+            # Create an agent, letting browser-use handle browser lifecycle
             agent = Agent(
                 task=f"""
                 Map this documentation site for the Python package and find all important pages. Focus on:
@@ -586,18 +589,14 @@ class DocumentationExtractor:
                 Return a structured list of pages with title, URL, and priority.
                 """,
                 llm=self.llm,
-                browser=browser,
-                use_vision=self.use_vision  # Enable vision capabilities
+                use_vision=self.use_vision,
+                initial_actions=initial_actions # Pass initial_actions to constructor
             )
-            
-            # Set up initial actions to visit the documentation site
-            initial_actions = [
-                {'open_tab': {'url': doc_url}}
-            ]
             
             # Run the agent
             logger.browser_action(f"Running site mapping agent for {doc_url}")
-            result = await agent.run(initial_actions=initial_actions)
+            await agent.browser_session.start() 
+            result = await agent.run() # Call run() with no arguments
             
             # Calculate token usage
             agent_end_tokens = tracker.get_total_tokens()
@@ -626,18 +625,38 @@ class DocumentationExtractor:
                 
                 # Get page titles from browser history
                 page_titles = {}
-                for action in result.actions():
-                    if action.name == 'get_page_content' and hasattr(action, 'result'):
-                        try:
-                            html_content = action.result
-                            if html_content:
-                                soup = BeautifulSoup(html_content, 'lxml')
-                                url = action.parameters.get('url', '')
-                                title = soup.title.string if soup.title else None
-                                if url and title:
-                                    page_titles[url] = title
-                        except Exception:
+                # Ensure result.history and result.history.history are accessible
+                if hasattr(result, 'history') and result.history and hasattr(result.history, 'history') and result.history.history:
+                    for history_step in result.history.history: # history_step is AgentHistory
+                        if not (history_step.model_output and hasattr(history_step.model_output, 'action') and \
+                                history_step.model_output.action and hasattr(history_step, 'result') and \
+                                history_step.result and hasattr(history_step, 'state')):
                             continue
+
+                        # Iterate through actions taken in this step and their corresponding results
+                        for i, action_model_instance in enumerate(history_step.model_output.action):
+                            if i >= len(history_step.result): # Ensure result exists for this action
+                                continue
+
+                            action_data = action_model_instance.model_dump(exclude_unset=True)
+                            if not action_data:
+                                continue
+                            
+                            action_name = next(iter(action_data.keys()))
+                            
+                            if action_name == 'get_page_content':
+                                action_outcome = history_step.result[i] # This is an ActionResult
+                                html_content_for_title = getattr(action_outcome, 'extracted_content', None) # Use a distinct variable name
+                                current_url_at_step = getattr(history_step.state, 'url', None)
+
+                                if html_content_for_title and current_url_at_step:
+                                    try:
+                                        soup = BeautifulSoup(html_content_for_title, 'lxml')
+                                        title = soup.title.string if soup.title else None
+                                        if title:
+                                            page_titles[current_url_at_step] = title.strip()
+                                    except Exception as e:
+                                        logger.warning(f"Error parsing HTML for title from {current_url_at_step}: {e}")
                 
                 # Process visited URLs
                 for url in visited_urls:
@@ -724,8 +743,8 @@ class DocumentationExtractor:
             logger.error(f"Error mapping site {doc_url}: {str(e)}")
             raise ContentExtractionError(f"Failed to map documentation site: {str(e)}") from e
         finally:
-            # Always close the browser
-            await browser.close()
+            if 'agent' in locals() and hasattr(agent, 'browser_session') and agent.browser_session:
+                await agent.browser_session.close()
     
     def _hash_url(self, url: str) -> str:
         """Create a simplified hash of a URL for caching."""
@@ -893,11 +912,16 @@ class DocumentationExtractor:
             # Track token usage for the agent
             agent_start_tokens = tracker.get_total_tokens()
             
-            # Initialize browser
-            browser = Browser(config=self.browser_config)
+            # Track token usage for the agent
+            agent_start_tokens = tracker.get_total_tokens()
             
             try:
-                # Create an agent with appropriate model for content extraction
+                # Set up initial actions to visit the page
+                initial_actions = [
+                    {'open_tab': {'url': url}}
+                ]
+
+                # Create an agent, letting browser-use handle browser lifecycle
                 agent = Agent(
                     task=f"""
                     Extract the main documentation content from this page about the Python package '{package_name}'.
@@ -919,20 +943,16 @@ class DocumentationExtractor:
                     Make sure to include code blocks, tables, lists, and other elements exactly as they appear.
                     """,
                     llm=self.llm,
-                    browser=browser,
-                    use_vision=self.use_vision  # Enable vision capabilities
+                    use_vision=self.use_vision,
+                    initial_actions=initial_actions # Pass initial_actions to constructor
                 )
-                
-                # Set up initial actions to visit the page
-                initial_actions = [
-                    {'open_tab': {'url': url}}
-                ]
                 
                 # Add this URL to processed set to avoid duplicate processing
                 self.processed_urls.add(url)
                 
                 # Run the agent
-                result = await agent.run(initial_actions=initial_actions)
+                await agent.browser_session.start() 
+                result = await agent.run() # Call run() with no arguments
                 
                 # Calculate token usage
                 agent_end_tokens = tracker.get_total_tokens()
@@ -954,10 +974,33 @@ class DocumentationExtractor:
                 if len(extracted_content) < 100:
                     # Get the page HTML from the browser actions
                     html_content = None
-                    for action in result.actions():
-                        if action.name == 'get_page_content':
-                            html_content = action.result
-                            break
+                    # Ensure result.history and result.history.history are accessible
+                    if hasattr(result, 'history') and result.history and hasattr(result.history, 'history') and result.history.history:
+                        for history_step in result.history.history: # history_step is AgentHistory
+                            if not (history_step.model_output and hasattr(history_step.model_output, 'action') and \
+                                    history_step.model_output.action and hasattr(history_step, 'result') and \
+                                    history_step.result): # No need to check for state here
+                                continue
+
+                            # Iterate through actions taken in this step and their corresponding results
+                            for i, action_model_instance in enumerate(history_step.model_output.action):
+                                if i >= len(history_step.result): # Ensure result exists for this action
+                                    continue
+
+                                action_data = action_model_instance.model_dump(exclude_unset=True)
+                                if not action_data:
+                                    continue
+                                
+                                action_name = next(iter(action_data.keys()))
+                                
+                                if action_name == 'get_page_content':
+                                    action_outcome = history_step.result[i] # This is an ActionResult
+                                    current_html_content = getattr(action_outcome, 'extracted_content', None)
+                                    if current_html_content: # Check if content was extracted
+                                        html_content = current_html_content # Assign to the outer scope html_content
+                                        break # Found the first get_page_content with actual content
+                            if html_content: # If we found content, break outer loop too
+                                break
                     
                     if html_content:
                         # Parse HTML with BeautifulSoup
@@ -1063,8 +1106,8 @@ class DocumentationExtractor:
                 logger.error(f"Error extracting content from {url} for {package_name}: {str(e)}")
                 return f"<div class='extraction-error'>Error extracting content: {str(e)}</div>"
             finally:
-                # Always close the browser
-                await browser.close()
+                if 'agent' in locals() and hasattr(agent, 'browser_session') and agent.browser_session:
+                    await agent.browser_session.close()
     
     def _improve_code_blocks(self, html_content: str) -> str:
         """Improve the formatting of code blocks in HTML content."""
@@ -1109,7 +1152,7 @@ class DocumentationExtractor:
                 markdown = re.sub(r'<div class=\'agent-extracted-content\'>(.*?)</div>', r'\1', html, flags=re.DOTALL)
             else:
                 # Use markitdown to convert HTML to Markdown
-                markdown = markitdown(html)
+                markdown = markitdown.markitdown(html) # Corrected call
                 
                 # Clean up the markdown
                 markdown = re.sub(r'\n{3,}', '\n\n', markdown)  # Remove excess newlines
