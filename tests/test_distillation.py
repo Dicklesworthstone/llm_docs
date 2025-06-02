@@ -59,11 +59,15 @@ This is the content of section 5.
 @pytest.mark.asyncio
 async def test_distill_chunk():
     """Test distilling a chunk of documentation."""
-    with patch('aisuite.Client.chat.completions.create') as mock_create:
+    with patch('llm_docs.distillation.distiller.ai.Client') as MockAiClient:
+        # Configure the mock client instance and its nested methods
+        mock_client_instance = MockAiClient.return_value
+        mock_create = mock_client_instance.chat.completions.create
+        
         # Mock the aisuite response
-        mock_message = MagicMock()
-        mock_message.choices = [MagicMock(message=MagicMock(content="Distilled content"))]
-        mock_create.return_value = mock_message
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="Distilled content"))]
+        mock_create.return_value = mock_response
         
         # Create temp dir for output
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -141,13 +145,17 @@ async def test_distill_documentation():
 @pytest.mark.asyncio
 async def test_distill_chunk_retry_on_error():
     """Test retrying when API call fails."""
-    with patch('aisuite.Client.chat.completions.create') as mock_create:
+    with patch('llm_docs.distillation.distiller.ai.Client') as MockAiClient:
+        # Configure the mock client instance and its nested methods
+        mock_client_instance = MockAiClient.return_value
+        mock_create = mock_client_instance.chat.completions.create
+
         # Simulate API error on first call, success on second
-        mock_message = MagicMock()
-        mock_message.choices = [MagicMock(message=MagicMock(content="Distilled content"))]
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="Distilled content"))]
         mock_create.side_effect = [
             Exception("API Error"),
-            mock_message
+            mock_response
         ]
         
         # Create distiller with short retry delay
@@ -171,9 +179,13 @@ async def test_distill_chunk_retry_on_error():
 @pytest.mark.asyncio
 async def test_distill_chunk_all_retries_fail():
     """Test behavior when all API retry attempts fail."""
-    with patch('aisuite.Client.chat.completions.create') as mock_create, \
+    with patch('llm_docs.distillation.distiller.ai.Client') as MockAiClient, \
          tempfile.TemporaryDirectory() as temp_dir:
         
+        # Configure the mock client instance and its nested methods
+        mock_client_instance = MockAiClient.return_value
+        mock_create = mock_client_instance.chat.completions.create
+
         # Mock API to always fail
         mock_create.side_effect = Exception("API Error")
         

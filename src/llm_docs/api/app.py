@@ -36,7 +36,7 @@ redis_client = redis.from_url(redis_url, decode_responses=True)
 
 # FastAPI models for requests and responses
 class PackageCreate(BaseModel):
-    name: str = Field(..., regex=r'^[a-z0-9\-_]+$')
+    name: str = Field(..., pattern=r'^[a-z0-9\-_]+$')
     priority: Optional[int] = Field(None, ge=0)  # Must be non-negative
     description: Optional[str] = None
 

@@ -43,11 +43,13 @@ dependencies = [
     "ruff",
     "mypy",
     "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
     "beautifulsoup4",
     "lxml",
     "typer",
     "langchain_openai",
-    "langchain-core",
+    "langchain-core==0.3.63",
     "browser-use @ git+https://github.com/gregpr07/browser-use.git",
     "playwright"
 ]
@@ -76,3 +78,6 @@ allow-direct-references = true
 
 [project.scripts]
 llm_docs = "llm_docs.cli:app"
+
+[tool.pytest.ini_options]
+asyncio_default_fixture_loop_scope = "function"

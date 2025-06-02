@@ -48,13 +48,14 @@ async def test_get_package_stats():
         # Mock the response
         mock_response = AsyncMock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
+        # If the code under test does 'await response.json()', then 'response.json' needs to be an AsyncMock.
+        mock_response.json = AsyncMock(return_value={
             "data": {
                 "last_day": 100000,
                 "last_week": 700000,
                 "last_month": 3000000
             }
-        }
+        })
         mock_get.return_value = mock_response
         
         # Mock session
@@ -74,7 +75,7 @@ async def test_get_package_stats():
 
 
 @pytest.mark.asyncio
-async def test_discover_and_store_packages(session):
+async def test_discover_and_store_packages(async_session):
     """Test discovering and storing packages."""
     with patch.object(PackageDiscovery, 'get_top_packages_from_pypi') as mock_get_top, \
          patch.object(PackageDiscovery, 'get_package_stats') as mock_get_stats:
@@ -88,7 +89,7 @@ async def test_discover_and_store_packages(session):
         ]
         
         # Create discovery instance
-        discovery = PackageDiscovery(session)
+        discovery = PackageDiscovery(async_session)
         
         # Call the method
         packages = await discovery.discover_and_store_packages(limit=2)
@@ -103,6 +104,6 @@ async def test_discover_and_store_packages(session):
         db_packages = result.scalars().all()
         assert len(db_packages) == 2
 
-        result = await session.execute(select(PackageStats))
+        result = await async_session.execute(select(PackageStats))
         db_stats = result.scalars().all()
         assert len(db_stats) == 2
