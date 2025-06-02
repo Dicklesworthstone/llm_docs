@@ -12,6 +12,15 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.pool import NullPool
 from sqlmodel import SQLModel, text
 
+# Import all models to ensure they are registered with SQLModel.metadata
+from .models import (
+    Package,
+    PackageStats,
+    DocumentationPage,
+    DistillationJob,
+    ProcessingMetrics,
+)
+
 # Console for colored output
 console = Console()
 

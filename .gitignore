@@ -195,3 +195,4 @@ distilled_docs/*.md
 .DS_Store
 llm_docs.db-shm
 llm_docs.db-wal
+api_keys.txt

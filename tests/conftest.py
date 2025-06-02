@@ -3,8 +3,10 @@ Pytest configuration for llm_docs tests.
 """
 
 import asyncio
+import os
 
 import pytest
+import pytest_asyncio
 from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlmodel import SQLModel
@@ -27,7 +29,7 @@ def async_engine_fixture():
             await conn.run_sync(SQLModel.metadata.drop_all)
     asyncio.run(drop_tables())
 
-@pytest.fixture(name="async_session")
+@pytest_asyncio.fixture(name="async_session")
 async def async_session_fixture(async_engine):
     """Create an async database session for testing."""
     async with AsyncSession(async_engine) as session:
@@ -39,6 +41,12 @@ async def async_session_fixture(async_engine):
 @pytest.fixture(name="client")
 def client_fixture(async_engine):
     """Create a FastAPI test client."""
+    # Ensure static directories exist before importing the app
+    # as the app mounts StaticFiles at import time.
+    os.makedirs("./docs", exist_ok=True)
+    os.makedirs("./distilled_docs", exist_ok=True)
+    os.makedirs("./static", exist_ok=True)
+
     # Import here to avoid circular imports
     from llm_docs.api.app import app
     from llm_docs.storage.database import get_async_session
